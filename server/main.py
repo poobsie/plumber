@@ -30,6 +30,9 @@ _subscribers: list[asyncio.Queue] = []
 # Approval slots: id -> { event, result, action, context, expires_at }
 _pending: dict[str, dict] = {}
 
+# Value request slots: id -> { event, result, prompt, task_id, expires_at }
+_value_pending: dict[str, dict] = {}
+
 
 def _push(event_type: str, data: dict):
     msg = json.dumps({"type": event_type, **data})
@@ -52,6 +55,11 @@ app = FastAPI(lifespan=lifespan)
 class ApprovalRequest(BaseModel):
     action: str
     context: dict
+
+
+class ValueRequest(BaseModel):
+    prompt: str
+    task_id: str = ""
 
 
 class StatusReport(BaseModel):
@@ -153,6 +161,59 @@ async def reject(approval_id: str):
 async def clear_status():
     state.clear_status()
     _push("status_cleared", {})
+    return {"ok": True}
+
+
+@app.post("/value/request")
+async def request_value(body: ValueRequest):
+    req_id = str(uuid.uuid4())
+    event = asyncio.Event()
+    expires_at = (datetime.now(timezone.utc).timestamp() + 600) * 1000
+    _value_pending[req_id] = {
+        "event": event,
+        "result": [None],
+        "cancelled": [False],
+        "prompt": body.prompt,
+        "task_id": body.task_id,
+        "expires_at": expires_at,
+    }
+    _push("value_requested", {
+        "id": req_id,
+        "prompt": body.prompt,
+        "task_id": body.task_id,
+        "expires_at": expires_at,
+    })
+    try:
+        await asyncio.wait_for(event.wait(), timeout=600)
+    except asyncio.TimeoutError:
+        _value_pending.pop(req_id, None)
+        _push("value_expired", {"id": req_id})
+        return {"value": None, "reason": "timeout"}
+    slot = _value_pending.pop(req_id)
+    if slot["cancelled"][0]:
+        return {"value": None, "reason": "cancelled"}
+    return {"value": slot["result"][0]}
+
+
+@app.post("/value/{req_id}/submit")
+async def submit_value(req_id: str, body: dict):
+    if req_id not in _value_pending:
+        raise HTTPException(404)
+    slot = _value_pending[req_id]
+    slot["result"][0] = body.get("value", "")
+    slot["event"].set()
+    _push("value_resolved", {"id": req_id})
+    return {"ok": True}
+
+
+@app.post("/value/{req_id}/cancel")
+async def cancel_value(req_id: str):
+    if req_id not in _value_pending:
+        raise HTTPException(404)
+    slot = _value_pending[req_id]
+    slot["cancelled"][0] = True
+    slot["event"].set()
+    _push("value_resolved", {"id": req_id})
     return {"ok": True}
 
 
@@ -332,11 +393,16 @@ async def sse(request: Request):
                 {"id": id_, "action": s["action"], "context": s["context"], "expires_at": s["expires_at"]}
                 for id_, s in _pending.items()
             ]
+            pending_values = [
+                {"id": id_, "prompt": s["prompt"], "task_id": s["task_id"], "expires_at": s["expires_at"]}
+                for id_, s in _value_pending.items()
+            ]
             init = json.dumps({
                 "type": "init",
                 "builds": state.get_builds(),
                 "status_feed": state.get_status_feed(),
                 "pending_approvals": pending,
+                "pending_value_requests": pending_values,
                 "tasks": state.get_tasks(),
                 "tools": state.get_tools(),
             })

@@ -299,6 +299,29 @@ def post_status(task_id: str, summary: str, percent_complete: int) -> str:
 
 
 @mcp.tool()
+def request_value(task_id: str, prompt: str) -> str:
+    """Request a sensitive value from the user via the dashboard (e.g. an API token or credential
+    needed as a pipeline parameter). Blocks until the user submits or cancels.
+    Returns the value string, or an error message if cancelled/timed out.
+    Use this instead of hardcoding secrets or asking the user in chat."""
+    try:
+        resp = requests.post(
+            f"{DASHBOARD}/value/request",
+            json={"prompt": prompt, "task_id": task_id},
+            timeout=APPROVAL_TIMEOUT,
+        )
+        result = resp.json()
+        value = result.get("value")
+        if value is None:
+            return f"CANCELLED: User did not provide a value ({result.get('reason', 'unknown')})."
+        return value
+    except requests.Timeout:
+        return "TIMEOUT: User did not respond in time."
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
 def open_pr(task_id: str, repo: str, base: str, head: str, title: str, body: str) -> str:
     """Open a draft pull request on GitHub. ALWAYS creates in draft mode - never publish directly.
     Requires human approval which shows a full markdown preview of the PR.

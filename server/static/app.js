@@ -4,6 +4,7 @@
   status: null,
   tasks: [],
   tools: [],
+  valueRequests: {},
 };
 
 const expandedTasks = new Set();
@@ -48,6 +49,9 @@ function handle(msg) {
       (msg.pending_approvals || []).forEach((a) => {
         state.approvals[a.id] = { action: a.action, context: a.context, expiresAt: a.expires_at };
       });
+      (msg.pending_value_requests || []).forEach((v) => {
+        state.valueRequests[v.id] = { prompt: v.prompt, task_id: v.task_id, expiresAt: v.expires_at };
+      });
       renderAll();
       break;
     case "approval_requested":
@@ -58,6 +62,16 @@ function handle(msg) {
     case "approval_resolved":
     case "approval_expired":
       delete state.approvals[msg.id];
+      renderApprovals();
+      break;
+    case "value_requested":
+      state.valueRequests[msg.id] = { prompt: msg.prompt, task_id: msg.task_id, expiresAt: msg.expires_at };
+      renderApprovals();
+      notify("Input required", msg.prompt);
+      break;
+    case "value_resolved":
+    case "value_expired":
+      delete state.valueRequests[msg.id];
       renderApprovals();
       break;
     case "status_update":
@@ -441,8 +455,13 @@ async function onToolSelect() {
   if (!tool) return;
   if (tool.is_multibranch) document.getElementById("multibranch-hint").classList.remove("hidden");
   document.getElementById("params-label-extra").textContent = "(loading...)";
+  // For multibranch pipelines, the parent job has no param definitions - they live on branch jobs.
+  // Query the base branch to get the real param set.
+  const jobPath = tool.is_multibranch
+    ? `${tool.jenkins_job}/${tool.base_branch || "pre_production"}`
+    : tool.jenkins_job;
   try {
-    const info = await fetch(`/jenkins/job/${tool.jenkins_job}/info`).then((r) => r.json());
+    const info = await fetch(`/jenkins/job/${jobPath}/info`).then((r) => r.json());
     currentJobInfo = info;
     document.getElementById("params-label-extra").textContent = info.params.length ? `(${info.params.length} from Jenkins)` : "";
     populateParams(info.params);
@@ -762,6 +781,8 @@ ${gitNote}
 - NEVER push or merge into ${baseBranch}. When the fix is verified by logs, use open_pr to create a draft PR.${task.jira_us ? `\n- PR title must be "${task.jira_us}: Brief description" - the jira number prefix is required.` : ""}
 - open_pr(task_id, repo, base, head, title, body): repo in "owner/repo" format, base="${baseBranch}".
 - Use jenkins_trigger (not curl/HTTP) to run the pipeline - approval required.
+- When setting pipeline parameters, do NOT enable any parameter that publishes, archives, or uploads build artifacts. If unsure what a parameter does, leave it at its default value.
+- If a pipeline parameter requires a secret or credential (token, password, key), do NOT guess or hardcode it. Call request_value('${task.id}', 'description of what is needed') to prompt the user for it via the dashboard - the return value is the secret to use.
 - For multibranch pipelines: after pushing, call jenkins_scan('${task.jenkins_job}') first,
   wait 15s, then trigger the branch job. The branch job won't exist until Jenkins scans.
 - After jenkins_trigger, immediately call jenkins_wait - this blocks until the build finishes.
@@ -832,20 +853,23 @@ function renderApprovals() {
   const section = document.getElementById("approvals-section");
   const list = document.getElementById("approvals-list");
   const count = document.getElementById("approval-count");
-  const entries = Object.entries(state.approvals);
+  const approvalEntries = Object.entries(state.approvals);
+  const valueEntries = Object.entries(state.valueRequests);
+  const total = approvalEntries.length + valueEntries.length;
 
-  count.textContent = entries.length;
-  count.className = entries.length ? "badge" : "badge zero";
+  count.textContent = total;
+  count.className = total ? "badge" : "badge zero";
 
-  if (!entries.length) {
+  if (!total) {
     section.classList.add("hidden");
     list.innerHTML = "";
     return;
   }
 
   section.classList.remove("hidden");
-  list.innerHTML = entries.map(([id, a]) => {
+  const approvalHtml = approvalEntries.map(([id, a]) => {
     if (a.action === "open_pr") return renderPrApproval(id, a);
+    if (a.action === "jenkins_trigger") return renderJenkinsTriggerApproval(id, a);
     const cls = a.action.startsWith("git") ? "git" : "jenkins";
     const ctxRows = Object.entries(a.context)
       .map(([k, v]) => {
@@ -865,6 +889,73 @@ function renderApprovals() {
         </div>
       </div>`;
   }).join("");
+  const valueHtml = valueEntries.map(([id, v]) => renderValueRequest(id, v)).join("");
+  list.innerHTML = approvalHtml + valueHtml;
+}
+
+function renderValueRequest(id, v) {
+  return `
+    <div class="approval-card git" data-value-id="${id}">
+      <div class="approval-top">
+        <span class="action-badge git">input required</span>
+        <span class="countdown" data-expires="${v.expiresAt}"></span>
+      </div>
+      <div style="padding:4px 14px 10px;font-size:12px;color:var(--text)">${esc(v.prompt)}</div>
+      <div style="padding:0 14px 10px;display:flex;gap:8px;align-items:center">
+        <input id="vr-input-${id}" type="password" placeholder="Enter value..." style="flex:1;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;padding:6px 9px;font-family:inherit" onkeydown="if(event.key==='Enter')submitValue('${id}')">
+        <button class="btn btn-sm" style="background:none;border:1px solid var(--border);color:var(--muted);cursor:pointer;border-radius:4px;padding:3px 8px;font-size:11px" onclick="toggleValueVisibility('${id}')" title="Show/hide">&#128065;</button>
+      </div>
+      <div class="approval-btns">
+        <button class="btn btn-approve" onclick="submitValue('${id}')">Submit</button>
+        <button class="btn btn-reject" onclick="cancelValue('${id}')">Cancel</button>
+      </div>
+    </div>`;
+}
+
+function toggleValueVisibility(id) {
+  const inp = document.getElementById(`vr-input-${id}`);
+  if (inp) inp.type = inp.type === "password" ? "text" : "password";
+}
+
+async function submitValue(id) {
+  const inp = document.getElementById(`vr-input-${id}`);
+  if (!inp) return;
+  const value = inp.value;
+  inp.disabled = true;
+  await fetch(`/value/${id}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+}
+
+async function cancelValue(id) {
+  await fetch(`/value/${id}/cancel`, { method: "POST" });
+}
+
+function renderJenkinsTriggerApproval(id, a) {
+  const params = a.context.params || {};
+  const paramRows = Object.entries(params).length
+    ? Object.entries(params).map(([k, v]) =>
+        `<span class="ctx-key">${esc(k)}</span><span class="ctx-val">${esc(String(v))}</span>`
+      ).join("")
+    : `<span class="ctx-key" style="grid-column:1/-1;color:var(--muted)">(no parameters)</span>`;
+  return `
+    <div class="approval-card jenkins" data-id="${id}">
+      <div class="approval-top">
+        <span class="action-badge jenkins">jenkins trigger</span>
+        <span class="countdown" data-expires="${a.expiresAt}"></span>
+      </div>
+      <div class="ctx-table">
+        <span class="ctx-key">job</span><span class="ctx-val">${esc(a.context.job || "")}</span>
+      </div>
+      <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;padding:6px 14px 2px">Parameters</div>
+      <div class="ctx-table" style="padding:0 14px 10px">${paramRows}</div>
+      <div class="approval-btns" style="padding:0 14px 12px">
+        <button class="btn btn-approve" onclick="respond('${id}', true)">Approve</button>
+        <button class="btn btn-reject" onclick="respond('${id}', false)">Reject</button>
+      </div>
+    </div>`;
 }
 
 // --- Status (orphaned - not linked to a task) ---
