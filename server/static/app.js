@@ -732,12 +732,13 @@ function showPrompt(taskOrId) {
     ? `\nMultibranch pipeline: branch '${task.branch}' determines which pipeline branch runs (job path: ${task.jenkins_job})\n`
     : "";
   const needsPipelineClone = task.pipeline_location === "pipeline_repo";
+  const branchNote = `- After cloning, immediately check whether branch '${task.branch}' already exists on the remote: run \`git fetch origin\` then \`git branch -r\` and look for origin/${task.branch}. If it exists, check it out with \`git checkout ${task.branch}\` (do NOT call git_create_branch - the branch is already there). If it does not exist, then call git_create_branch. Never start investigating the codebase until you are on the correct branch.`;
   const cloneSteps = needsPipelineClone
     ? `- git_clone('${task.id}', 'code') - clones code repo, checks out ${baseBranch}\n- git_clone('${task.id}', 'pipeline') - clones pipeline repo, checks out ${baseBranch}`
     : `- git_clone('${task.id}', 'code') - clones code repo, checks out ${baseBranch}`;
   const gitNote = needsPipelineClone
-    ? `- Use git_create_branch on both cloned paths before editing anything.\n- Use git_push (not raw git) to push each branch - approval required.`
-    : `- Use git_create_branch on the cloned code repo path before editing anything.\n- Use git_push (not raw git) to push the branch - approval required.`;
+    ? `${branchNote}\n- Both repos need a branch pushed before you trigger Jenkins - Jenkins reads the Jenkinsfile from the pipeline repo branch, so pushing only the code branch will run the old pipeline.\n- Push order: pipeline repo first, then code repo, then trigger.\n- Use git_push (not raw git) to push each branch - approval required for each.`
+    : `${branchNote}\n- Use git_push (not raw git) to push the branch - approval required.`;
 
   const prompt = `Task: ${task.name}
 
