@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -200,6 +202,17 @@ async def get_tools():
 async def create_tool(body: Tool):
     tool = body.model_dump()
     tool["id"] = str(uuid.uuid4())
+    state.save_tool(tool)
+    _push("tool_updated", tool)
+    return tool
+
+
+@app.patch("/tools/{tool_id}")
+async def update_tool(tool_id: str, body: dict):
+    tool = state.get_tool(tool_id)
+    if not tool:
+        raise HTTPException(404)
+    tool.update(body)
     state.save_tool(tool)
     _push("tool_updated", tool)
     return tool

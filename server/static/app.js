@@ -144,9 +144,51 @@ function saveSettings() {
   closeSettings();
 }
 
+// --- Edit modal ---
+
+let editModal = null;
+
+function openEditModal(cfg) {
+  // cfg: { title, fields, onSave }
+  editModal = cfg;
+  const modal = document.getElementById("edit-modal");
+  document.getElementById("edit-modal-title").textContent = cfg.title;
+  const body = document.getElementById("edit-modal-body");
+  body.innerHTML = cfg.fields.map((f) => {
+    if (f.type === "textarea") {
+      return `<div class="field"><label>${esc(f.label)}</label><textarea id="em-${esc(f.id)}" rows="3">${esc(f.value || "")}</textarea></div>`;
+    }
+    if (f.type === "select") {
+      const opts = f.options.map((o) => `<option value="${esc(o.value)}"${o.value === f.value ? " selected" : ""}>${esc(o.label)}</option>`).join("");
+      return `<div class="field"><label>${esc(f.label)}</label><select id="em-${esc(f.id)}">${opts}</select></div>`;
+    }
+    return `<div class="field"><label>${esc(f.label)}</label><input id="em-${esc(f.id)}" type="text" value="${esc(f.value || "")}"></div>`;
+  }).join("");
+  modal.classList.remove("hidden");
+  const first = body.querySelector("input,textarea,select");
+  if (first) first.focus();
+}
+
+function closeEditModal() {
+  document.getElementById("edit-modal").classList.add("hidden");
+  editModal = null;
+}
+
+async function saveEditModal() {
+  if (!editModal) return;
+  const values = {};
+  editModal.fields.forEach((f) => {
+    const el = document.getElementById(`em-${f.id}`);
+    if (el) values[f.id] = el.value;
+  });
+  await editModal.onSave(values);
+  closeEditModal();
+}
+
 // --- Tools ---
 
 let currentToolInfo = null;
+let _allJobs = [];
 
 function toggleToolForm() {
   const panel = document.getElementById("new-tool-panel");
@@ -160,16 +202,29 @@ function toggleToolForm() {
 }
 
 async function loadToolJobs() {
-  const sel = document.getElementById("tf-job");
-  sel.innerHTML = '<option value="">Loading...</option>';
+  const input = document.getElementById("tf-job");
+  const dl = document.getElementById("tf-job-datalist");
+  input.placeholder = "Loading...";
+  input.disabled = true;
   try {
-    const jobs = await fetch("/jenkins/jobs").then((r) => r.json());
-    if (!jobs.length) { sel.innerHTML = '<option value="">No jobs found</option>'; return; }
-    sel.innerHTML = '<option value="">Select job...</option>' +
-      jobs.map((j) => `<option value="${esc(j)}">${esc(j)}</option>`).join("");
-    sel.onchange = () => { if (sel.value) onToolJobSelect(sel.value); };
+    _allJobs = await fetch("/jenkins/jobs").then((r) => r.json());
+    dl.innerHTML = _allJobs.map((j) => `<option value="${esc(j)}"></option>`).join("");
+    input.placeholder = _allJobs.length ? "Type to search jobs..." : "No jobs found";
+    input.disabled = false;
   } catch {
-    sel.innerHTML = '<option value="">Failed to load</option>';
+    input.placeholder = "Failed to load jobs";
+    input.disabled = false;
+  }
+}
+
+function onJobInput() {
+  const val = document.getElementById("tf-job").value.trim();
+  if (_allJobs.includes(val)) {
+    onToolJobSelect(val);
+  } else {
+    currentToolInfo = null;
+    const hint = document.getElementById("tf-multibranch-hint");
+    if (hint) hint.classList.add("hidden");
   }
 }
 
@@ -211,6 +266,35 @@ async function deleteTool(id) {
   await fetch(`/tools/${id}`, { method: "DELETE" });
 }
 
+function editTool(id) {
+  const t = state.tools.find((t) => t.id === id);
+  if (!t) return;
+  openEditModal({
+    title: "Edit tool",
+    fields: [
+      { id: "name",       label: "Tool name",       value: t.name },
+      { id: "code_repo",  label: "Code repo URL",   value: t.code_repo },
+      { id: "pipeline_location", label: "Pipeline location", type: "select", value: t.pipeline_location,
+        options: [
+          { value: "pipeline_repo", label: "Separate pipeline repo" },
+          { value: "tool_repo",     label: "Jenkinsfile in code repo" },
+          { value: "jenkins",       label: "Stored in Jenkins" },
+        ]
+      },
+      { id: "pipeline_repo", label: "Pipeline repo URL", value: t.pipeline_repo },
+      { id: "jenkins_job",  label: "Jenkins job",    value: t.jenkins_job },
+      { id: "base_branch",  label: "Base branch",    value: t.base_branch || "pre_production" },
+    ],
+    onSave: async (v) => {
+      await fetch(`/tools/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(v),
+      });
+    },
+  });
+}
+
 function pipelineLocationLabel(loc) {
   return { pipeline_repo: "separate repo", tool_repo: "code repo", jenkins: "in Jenkins" }[loc] || loc;
 }
@@ -229,10 +313,71 @@ function renderTools() {
       <span class="row-tool">${esc(t.code_repo.replace(/^https?:\/\//, ""))}</span>
       <span style="font-size:10px;color:var(--muted);flex-shrink:0">${pipelineLocationLabel(t.pipeline_location)}</span>
       <span style="font-size:10px;color:var(--muted);flex-shrink:0">base: ${esc(t.base_branch || "pre_production")}</span>
-      <div class="row-actions" style="margin-left:auto">
-        <button class="btn-row danger" title="Delete" onclick="deleteTool('${esc(t.id)}')">&#10005;</button>
+      <div class="row-actions" style="margin-left:auto">        <button class="btn-row" title="Edit" onclick="editTool('${esc(t.id)}')">&#9998;</button>        <button class="btn-row danger" title="Delete" onclick="deleteTool('${esc(t.id)}')">&#10005;</button>
       </div>
     </div>`).join("");
+}
+
+// --- Expand stub into full task ---
+
+function expandStub(id) {
+  const t = state.tasks.find((t) => t.id === id);
+  if (!t) return;
+  // Open the full task form and pre-fill from stub
+  const panel = document.getElementById("new-task-panel");
+  if (panel.classList.contains("hidden")) {
+    panel.classList.remove("hidden");
+    populateToolSelect();
+  }
+  if (t.name) document.getElementById("f-name").value = t.name;
+  if (t.jira_us) document.getElementById("f-jira").value = t.jira_us;
+  // Store the stub id so we can delete it on submit
+  panel.dataset.stubId = id;
+  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  document.getElementById("f-name").focus();
+}
+
+function editStub(id) {
+  const t = state.tasks.find((t) => t.id === id);
+  if (!t) return;
+  openEditModal({
+    title: "Edit stub",
+    fields: [
+      { id: "name",    label: "Name",    value: t.name },
+      { id: "jira_us", label: "Jira US", value: t.jira_us },
+    ],
+    onSave: async (v) => {
+      await fetch(`/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: v.name, jira_us: v.jira_us }),
+      });
+    },
+  });
+}
+
+function editTask(id) {
+  const t = state.tasks.find((t) => t.id === id);
+  if (!t) return;
+  const toolOpts = [{ value: "", label: "(keep current)" }].concat(
+    state.tools.map((tl) => ({ value: tl.id, label: tl.name }))
+  );
+  openEditModal({
+    title: "Edit task",
+    fields: [
+      { id: "name",        label: "Name",        value: t.name },
+      { id: "branch",      label: "Branch",      value: t.branch },
+      { id: "jira_us",     label: "Jira US",     value: t.jira_us },
+      { id: "description", label: "Description", type: "textarea", value: t.description },
+    ],
+    onSave: async (v) => {
+      await fetch(`/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(v),
+      });
+    },
+  });
 }
 
 // --- Stub task ---
@@ -265,9 +410,12 @@ let paramCount = 0;
 let currentJobInfo = null;
 
 function toggleForm() {
-  document.getElementById("new-task-panel").classList.toggle("hidden");
-  if (!document.getElementById("new-task-panel").classList.contains("hidden")) {
+  const panel = document.getElementById("new-task-panel");
+  panel.classList.toggle("hidden");
+  if (!panel.classList.contains("hidden")) {
     populateToolSelect();
+  } else {
+    delete panel.dataset.stubId;
   }
 }
 
@@ -355,6 +503,14 @@ async function submitTask(e) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }).then((r) => r.json());
+
+  // If expanding a stub, delete it
+  const panel = document.getElementById("new-task-panel");
+  const stubId = panel.dataset.stubId;
+  if (stubId) {
+    delete panel.dataset.stubId;
+    await fetch(`/tasks/${stubId}`, { method: "DELETE" });
+  }
 
   e.target.reset();
   document.getElementById("params-list").innerHTML = "";
@@ -464,7 +620,12 @@ function renderTaskRow(t, inCompleted) {
 
   const actions = inCompleted
     ? `<button class="btn-row danger" title="Delete" onclick="event.stopPropagation();deleteTask('${esc(t.id)}')">&#10005;</button>`
-    : `${!isStub ? `<button class="btn-row primary" title="Start" onclick="event.stopPropagation();showPromptById('${esc(t.id)}')">&#9654;</button>` : ""}
+    : `${isStub
+        ? `<button class="btn-row primary" title="Expand to full task" onclick="event.stopPropagation();expandStub('${esc(t.id)}')" style="font-size:14px;font-weight:700">&#8599;</button>
+           <button class="btn-row" title="Edit stub" onclick="event.stopPropagation();editStub('${esc(t.id)}')" style="font-size:13px">&#9998;</button>`
+        : `<button class="btn-row primary" title="Start" onclick="event.stopPropagation();showPromptById('${esc(t.id)}')">&#9654;</button>
+           <button class="btn-row" title="Edit task" onclick="event.stopPropagation();editTask('${esc(t.id)}')" style="font-size:13px">&#9998;</button>`
+      }
        <button class="btn-row success" title="Mark complete" onclick="event.stopPropagation();completeTask('${esc(t.id)}')">&#10003;</button>
        <button class="btn-row danger" title="Delete" onclick="event.stopPropagation();deleteTask('${esc(t.id)}')">&#10005;</button>`;
 
@@ -635,6 +796,9 @@ document.getElementById("prompt-modal").addEventListener("click", (e) => {
 });
 document.getElementById("settings-modal").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) closeSettings();
+});
+document.getElementById("edit-modal").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) closeEditModal();
 });
 
 // --- Approvals ---

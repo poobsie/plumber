@@ -112,6 +112,28 @@ class Jenkins:
         return {"building": True, "result": None, "timed_out": True}
 
     def list_jobs(self) -> list:
-        r = self.session.get(f"{self.url}/api/json?tree=jobs[name]", timeout=10)
-        r.raise_for_status()
-        return [j["name"] for j in r.json().get("jobs", [])]
+        """Return all job paths, recursing into folders. Multibranch pipelines are
+        returned as a single entry (not expanded to their branch children)."""
+        def _collect(path: str) -> list:
+            base = (self.url + self._job_url(path)) if path else self.url
+            try:
+                r = self.session.get(
+                    f"{base}/api/json",
+                    params={"tree": "jobs[name,_class]"},
+                    timeout=10,
+                )
+                r.raise_for_status()
+            except Exception:
+                return []
+            result = []
+            for job in r.json().get("jobs", []):
+                full = f"{path}/{job['name']}" if path else job["name"]
+                cls = job.get("_class", "")
+                # Recurse into plain folders but not multibranch pipelines
+                if "Folder" in cls and "MultiBranch" not in cls:
+                    result.extend(_collect(full))
+                else:
+                    result.append(full)
+            return result
+
+        return _collect("")

@@ -188,7 +188,9 @@ def git_push(repo_path: str, branch_name: str, remote: str = "origin") -> str:
 def jenkins_scan(job: str) -> str:
     """Trigger a multibranch pipeline scan so Jenkins discovers new/deleted branches.
     Call this after pushing a new branch, before trying to trigger the branch job.
-    No approval required."""
+    Requires human approval - scanning kicks off builds for every branch Jenkins finds."""
+    if not _approve("jenkins_scan", {"job": job}):
+        return "Scan rejected."
     try:
         j = _jenkins()
         url = f"{j.url}{j._job_url(job)}/build?delay=0"
