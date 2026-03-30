@@ -7,7 +7,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+import asyncio
+from mcp.server.fastmcp import FastMCP, Context
 import requests
 
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -273,23 +274,29 @@ def jenkins_logs_range(job: str, build_number: int, start_line: int, end_line: i
 
 
 @mcp.tool()
-def jenkins_wait(job: str, build_number: int, timeout_seconds: int = 3600) -> str:
-    """Block until a Jenkins build completes or times out. MUST be called after every
+async def jenkins_wait(job: str, build_number: int, ctx: Context) -> str:
+    """Block until a Jenkins build completes. MUST be called after every
     jenkins_trigger before doing anything else. Returns final status dict with 'result'
-    (SUCCESS/FAILURE/ABORTED) and 'timed_out'. If timed_out is true, stop and alert the user."""
+    (SUCCESS/FAILURE/ABORTED). Runs indefinitely - no timeout."""
     try:
         j = _jenkins()
-        result = j.wait_for_build(job, build_number, timeout_seconds)
-        final_status = result.get("result") or ("timed_out" if result.get("timed_out") else "unknown")
-        try:
-            requests.post(
-                f"{DASHBOARD}/build",
-                json={"job": job, "build_number": build_number, "status": final_status},
-                timeout=5,
-            )
-        except Exception:
-            pass
-        return json.dumps(result)
+        elapsed = 0
+        while True:
+            status = j.get_status(job, build_number)
+            if not status["building"]:
+                final_status = status.get("result") or "unknown"
+                try:
+                    requests.post(
+                        f"{DASHBOARD}/build",
+                        json={"job": job, "build_number": build_number, "status": final_status},
+                        timeout=5,
+                    )
+                except Exception:
+                    pass
+                return json.dumps(status)
+            await ctx.report_progress(elapsed, None)
+            await asyncio.sleep(15)
+            elapsed += 15
     except Exception as e:
         return f"ERROR: {e}"
 

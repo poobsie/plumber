@@ -49,7 +49,26 @@ async def lifespan(app: FastAPI):
     async def _open():
         await asyncio.sleep(1)
         webbrowser.open(f"http://localhost:{PORT}")
+
+    async def _webex_poll():
+        while True:
+            await asyncio.sleep(4)
+            if not webex._token:
+                continue
+            loop = asyncio.get_event_loop()
+            resolved = await loop.run_in_executor(None, webex.poll_pending)
+            for approval_id, approved in resolved:
+                if approval_id in _pending:
+                    slot = _pending[approval_id]
+                    slot["result"][0] = approved
+                    slot["event"].set()
+                    _push("approval_resolved", {"id": approval_id, "approved": approved})
+                    await loop.run_in_executor(
+                        None, webex.on_resolved, approval_id, approved, "Webex reaction"
+                    )
+
     asyncio.create_task(_open())
+    asyncio.create_task(_webex_poll())
     yield
 
 
@@ -143,6 +162,7 @@ async def request_approval(body: ApprovalRequest):
     except asyncio.TimeoutError:
         _pending.pop(approval_id, None)
         _push("approval_expired", {"id": approval_id})
+        asyncio.get_event_loop().run_in_executor(None, webex.on_resolved, approval_id, False, "timeout")
         return {"approved": False, "reason": "timeout"}
     approved = _pending.pop(approval_id)["result"][0]
     return {"approved": approved}
@@ -156,6 +176,7 @@ async def approve(approval_id: str):
     slot["result"][0] = True
     slot["event"].set()
     _push("approval_resolved", {"id": approval_id, "approved": True})
+    asyncio.get_event_loop().run_in_executor(None, webex.on_resolved, approval_id, True, "dashboard")
     return {"ok": True}
 
 
@@ -167,6 +188,7 @@ async def reject(approval_id: str):
     slot["result"][0] = False
     slot["event"].set()
     _push("approval_resolved", {"id": approval_id, "approved": False})
+    asyncio.get_event_loop().run_in_executor(None, webex.on_resolved, approval_id, False, "dashboard")
     return {"ok": True}
 
 
@@ -309,49 +331,11 @@ async def post_status(body: StatusReport):
 class WebexConfig(BaseModel):
     token: str
     room: str
-    webhook_url: str
 
 
 @app.post("/webex/config")
 async def configure_webex(body: WebexConfig):
-    asyncio.get_event_loop().run_in_executor(
-        None, webex.configure, body.token, body.room, body.webhook_url
-    )
-    return {"ok": True}
-
-
-@app.post("/webex/webhook")
-async def webex_webhook(request: Request):
-    """Receive Adaptive Card button clicks from Webex."""
-    payload = await request.json()
-    # Webex sends the action id; fetch the actual inputs from the API
-    action_id = (payload.get("data") or {}).get("id")
-    if not action_id:
-        return {"ok": True}
-
-    try:
-        import requests as _req
-        r = _req.get(
-            f"https://webexapis.com/v1/attachment/actions/{action_id}",
-            headers={"Authorization": f"Bearer {webex._token}"},
-            timeout=10,
-        )
-        r.raise_for_status()
-        inputs = r.json().get("inputs", {})
-    except Exception:
-        return {"ok": True}
-
-    plumber_action = inputs.get("plumber_action")
-    approval_id = inputs.get("approval_id")
-
-    if plumber_action in ("approve", "reject") and approval_id:
-        approved = plumber_action == "approve"
-        if approval_id in _pending:
-            slot = _pending[approval_id]
-            slot["result"][0] = approved
-            slot["event"].set()
-            _push("approval_resolved", {"id": approval_id, "approved": approved})
-
+    asyncio.get_event_loop().run_in_executor(None, webex.configure, body.token, body.room)
     return {"ok": True}
 
 

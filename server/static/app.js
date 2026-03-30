@@ -177,7 +177,6 @@ function openSettings() {
   document.getElementById("s-approval-mode").value = s.approvalMode || "always";
   document.getElementById("s-webex-token").value = s.webexToken || "";
   document.getElementById("s-webex-room").value = s.webexRoom || "";
-  document.getElementById("s-webex-webhook-url").value = s.webexWebhookUrl || "";
   document.getElementById("settings-modal").classList.remove("hidden");
 }
 
@@ -192,18 +191,13 @@ function saveSettings() {
     approvalMode: document.getElementById("s-approval-mode").value,
     webexToken: document.getElementById("s-webex-token").value.trim(),
     webexRoom: document.getElementById("s-webex-room").value.trim(),
-    webexWebhookUrl: document.getElementById("s-webex-webhook-url").value.trim(),
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  if (settings.webexToken && settings.webexRoom && settings.webexWebhookUrl) {
+  if (settings.webexToken && settings.webexRoom) {
     fetch("/webex/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        token: settings.webexToken,
-        room: settings.webexRoom,
-        webhook_url: settings.webexWebhookUrl,
-      }),
+      body: JSON.stringify({ token: settings.webexToken, room: settings.webexRoom }),
     }).catch(() => {});
   }
   closeSettings();
