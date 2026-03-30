@@ -1,12 +1,203 @@
-"""Webex Bot notifications. Approvals use 👍/👎 reaction polling - no public URL needed."""
+"""Webex Bot notifications. Approvals use threaded reply polling - no public URL needed."""
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
 
 import requests
+
+WEBEX_API = "https://webexapis.com/v1"
+log = logging.getLogger(__name__)
+
+_token: str = ""
+_room: str = ""
+# approval_id -> {"msg_id": str, "room_id": str}
+_pending_msgs: dict[str, dict] = {}
+
+
+def configure(token: str, room: str):
+    global _token, _room
+    _token = token
+    _room = room
+
+
+def _headers() -> dict:
+    return {"Authorization": f"Bearer {_token}", "Content-Type": "application/json"}
+
+
+def _dest() -> dict:
+    if "@" in _room:
+        return {"toPersonEmail": _room}
+    return {"roomId": _room}
+
+
+def _send(text: str) -> tuple[str, str] | tuple[None, None]:
+    """Send a markdown message. Returns (message_id, room_id) or (None, None) on failure."""
+    if not _token or not _room:
+        return None, None
+    try:
+        r = requests.post(
+            f"{WEBEX_API}/messages",
+            headers=_headers(),
+            json={**_dest(), "markdown": text},
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data.get("id"), data.get("roomId")
+    except Exception as e:
+        log.warning("Webex send failed: %s", e)
+        return None, None
+
+
+def _edit(room_id: str, message_id: str, text: str):
+    """Update an existing message. Falls back to a new message if edit fails (e.g. DMs)."""
+    if not _token or not message_id:
+        return
+    try:
+        requests.put(
+            f"{WEBEX_API}/messages/{message_id}",
+            headers=_headers(),
+            json={"roomId": room_id, "markdown": text},
+            timeout=10,
+        ).raise_for_status()
+    except Exception:
+        # Edit not supported (DMs, or old message) - send a follow-up instead
+        try:
+            requests.post(
+                f"{WEBEX_API}/messages",
+                headers=_headers(),
+                json={"roomId": room_id, "parentId": message_id, "markdown": text},
+                timeout=10,
+            ).raise_for_status()
+        except Exception as e:
+            log.warning("Webex follow-up failed: %s", e)
+
+
+def _ctx_lines(context: dict) -> str:
+    lines = []
+    for k, v in context.items():
+        val = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+        lines.append(f"**{k}:** `{val}`")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Approval request
+# ---------------------------------------------------------------------------
+
+def send_approval(approval_id: str, action: str, context: dict):
+    if not _token:
+        return
+    label = action.replace("_", " ").title()
+    ctx = _ctx_lines(context)
+    if action == "jenkins_trigger" and isinstance(context.get("params"), dict):
+        params = context["params"]
+        param_lines = "\n".join(f"  `{k}` = `{v}`" for k, v in params.items()) if params else "  _(none)_"
+        ctx = f"**job:** `{context.get('job', '')}`\n\n**Parameters:**\n{param_lines}"
+    elif action == "open_pr":
+        ctx = (
+            f"**repo:** `{context.get('repo', '')}`\n"
+            f"**branch:** `{context.get('head', '')}` \u2192 `{context.get('base', '')}`\n"
+            f"**title:** {context.get('title', '')}"
+        )
+        if context.get("body"):
+            preview = (context["body"] or "")[:400]
+            ctx += f"\n\n{preview}" + ("..." if len(context["body"]) > 400 else "")
+
+    text = (
+        f"**\U0001f510 Approval required: {label}**\n\n"
+        f"{ctx}\n\n"
+        f"Reply to this message with `approve` or `reject`"
+    )
+    msg_id, room_id = _send(text)
+    if msg_id and room_id:
+        _pending_msgs[approval_id] = {"msg_id": msg_id, "room_id": room_id}
+
+
+def poll_pending() -> list[tuple[str, bool]]:
+    """Poll threaded replies on pending approval messages. Returns (approval_id, approved) pairs."""
+    if not _token or not _pending_msgs:
+        return []
+    resolved: list[tuple[str, bool]] = []
+    for approval_id, info in list(_pending_msgs.items()):
+        try:
+            r = requests.get(
+                f"{WEBEX_API}/messages",
+                headers=_headers(),
+                params={"roomId": info["room_id"], "parentId": info["msg_id"], "max": 10},
+                timeout=10,
+            )
+            r.raise_for_status()
+            items = r.json().get("items", [])
+        except Exception:
+            continue
+        for msg in items:
+            text = (msg.get("text") or "").strip().lower()
+            if text in ("approve", "approved", "yes", "y"):
+                resolved.append((approval_id, True))
+                break
+            if text in ("reject", "rejected", "no", "n", "deny"):
+                resolved.append((approval_id, False))
+                break
+    return resolved
+
+
+def on_resolved(approval_id: str, approved: bool, via: str = "dashboard"):
+    """Called when an approval is resolved. Updates the Webex message."""
+    info = _pending_msgs.pop(approval_id, None)
+    if not info:
+        return
+    icon = "\u2705" if approved else "\u274c"
+    result = "Approved" if approved else "Rejected"
+    _edit(info["room_id"], info["msg_id"], f"**{icon} {result}** _(via {via})_")
+
+
+# ---------------------------------------------------------------------------
+# Status / input / choice
+# ---------------------------------------------------------------------------
+
+def send_status(summary: str, pct: int, task_id: str | None, tasks: list[dict]):
+    if not _token:
+        return
+    task_name = ""
+    if task_id:
+        t = next((t for t in tasks if t["id"] == task_id), None)
+        if t:
+            task_name = t.get("name") or t.get("jira_us") or ""
+    bar_filled = int(pct / 5)
+    bar = "\u2588" * bar_filled + "\u2591" * (20 - bar_filled)
+    lines = [f"**{pct}%** `{bar}`"]
+    if task_name:
+        lines.append(f"**Task:** {task_name}")
+    lines.append(summary)
+    _send("\n".join(lines))
+
+
+def send_input_request(prompt: str, task_id: str | None, tasks: list[dict]):
+    if not _token:
+        return
+    task_name = ""
+    if task_id:
+        t = next((t for t in tasks if t["id"] == task_id), None)
+        if t:
+            task_name = t.get("name") or ""
+    header = "Input required" + (f" - {task_name}" if task_name else "")
+    _send(f"**\u2328\ufe0f {header}**\n\n{prompt}\n\n_Respond in the dashboard._")
+
+
+def send_choice_request(prompt: str, options: list[str], task_id: str | None, tasks: list[dict]):
+    if not _token:
+        return
+    task_name = ""
+    if task_id:
+        t = next((t for t in tasks if t["id"] == task_id), None)
+        if t:
+            task_name = t.get("name") or ""
+    header = "Choice required" + (f" - {task_name}" if task_name else "")
+    opts_text = "\n".join(f"- {o}" for o in options)
+    _send(f"**\U0001f500 {header}**\n\n{prompt}\n\n{opts_text}\n\n_Select in the dashboard._")
 
 WEBEX_API = "https://webexapis.com/v1"
 log = logging.getLogger(__name__)
