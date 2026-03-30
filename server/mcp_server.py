@@ -98,7 +98,17 @@ def git_clone(task_id: str, repo_type: str) -> str:
     base = task.get("base_branch", "pre_production")
 
     if (dest / ".git").exists():
-        log("already cloned, returning existing path")
+        log("already cloned, fetching latest remote refs")
+        _git(["fetch", "--prune", "origin"], str(dest), timeout=60)
+        # Reset any uncommitted state and check out base branch if it exists remotely
+        log(f"checking if {base} exists remotely")
+        rc, out, _ = _git(["ls-remote", "--heads", "origin", base], str(dest))
+        if rc == 0 and base in out:
+            log(f"checking out {base}")
+            _git(["checkout", base], str(dest))
+            _git(["pull", "--ff-only", "origin", base], str(dest))
+        else:
+            log(f"{base} not found remotely, staying on current branch")
         return str(dest)
 
     log(f"cloning {url}")
@@ -126,13 +136,35 @@ def git_create_branch(repo_path: str, branch_name: str) -> str:
     if branch_name in PROTECTED_BRANCHES:
         return f"BLOCKED: '{branch_name}' is a protected branch. Creating or checking out protected branches directly is not allowed. Use a feature branch and open a PR."
     print(f"[git_create_branch] waiting for approval: {branch_name} in {repo_path}", file=sys.stderr, flush=True)
-    if not _approve("git_create_branch", {"repo": repo_path, "branch": branch_name}):
+    # Check for existing local or remote branch before asking for approval
+    _, local_out, _ = _git(["branch", "--list", branch_name], repo_path)
+    branch_exists_locally = bool(local_out.strip())
+
+    _git(["fetch", "--prune", "origin"], repo_path, timeout=60)
+    _, remote_out, _ = _git(["ls-remote", "--heads", "origin", branch_name], repo_path)
+    branch_exists_remotely = branch_name in remote_out
+
+    if not _approve("git_create_branch", {"repo": repo_path, "branch": branch_name,
+                                           "already_exists_locally": branch_exists_locally,
+                                           "already_exists_remotely": branch_exists_remotely}):
         return "REJECTED: User declined or approval timed out. Stop and explain what you were trying to do."
-    print(f"[git_create_branch] approved, running checkout -b", file=sys.stderr, flush=True)
-    code, out, err = _git(["checkout", "-b", branch_name], repo_path)
+
+    print(f"[git_create_branch] approved, branch_exists_locally={branch_exists_locally} branch_exists_remotely={branch_exists_remotely}", file=sys.stderr, flush=True)
+
+    if branch_exists_locally:
+        code, out, err = _git(["checkout", branch_name], repo_path)
+    elif branch_exists_remotely:
+        code, out, err = _git(["checkout", "--track", f"origin/{branch_name}"], repo_path)
+    else:
+        code, out, err = _git(["checkout", "-b", branch_name], repo_path)
+
     print(f"[git_create_branch] done: code={code} err={err}", file=sys.stderr, flush=True)
     if code != 0:
         return f"ERROR: {err}"
+    if branch_exists_locally:
+        return f"Checked out existing local branch '{branch_name}' in {repo_path}"
+    if branch_exists_remotely:
+        return f"Checked out existing remote branch '{branch_name}' (tracking origin) in {repo_path}"
     return f"Created branch '{branch_name}' in {repo_path}"
 
 
