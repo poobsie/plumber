@@ -212,6 +212,18 @@ def jenkins_list_jobs() -> str:
 
 
 @mcp.tool()
+def jenkins_get_params(job: str) -> str:
+    """Fetch the parameter definitions for a Jenkins job. Returns each parameter's name,
+    default value, description, and type. Call this before jenkins_trigger so you know
+    exactly what parameters the job accepts and can set them correctly."""
+    try:
+        info = _jenkins().get_job_info(job)
+        return json.dumps(info["params"])
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
 def jenkins_trigger(job: str, params: dict) -> str:
     """Trigger a Jenkins build with parameters. Requires human approval. Returns build_number."""
     if not _approve("jenkins_trigger", {"job": job, "params": params}):
@@ -314,6 +326,30 @@ def request_value(task_id: str, prompt: str) -> str:
         value = result.get("value")
         if value is None:
             return f"CANCELLED: User did not provide a value ({result.get('reason', 'unknown')})."
+        return value
+    except requests.Timeout:
+        return "TIMEOUT: User did not respond in time."
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
+def request_choice(task_id: str, prompt: str, options: list[str]) -> str:
+    """Present the user with a multiple-choice question via the dashboard and return the chosen option.
+    Use when a pipeline parameter (or any decision) has a known finite set of valid values and you
+    cannot determine the correct one from context alone.
+    options: list of strings the user can pick from.
+    Blocks until the user selects an option or cancels. Returns the chosen string, or an error."""
+    try:
+        resp = requests.post(
+            f"{DASHBOARD}/choice/request",
+            json={"prompt": prompt, "options": options, "task_id": task_id},
+            timeout=APPROVAL_TIMEOUT,
+        )
+        result = resp.json()
+        value = result.get("value")
+        if value is None:
+            return f"CANCELLED: User did not select an option ({result.get('reason', 'unknown')})."
         return value
     except requests.Timeout:
         return "TIMEOUT: User did not respond in time."

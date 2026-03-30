@@ -33,6 +33,9 @@ _pending: dict[str, dict] = {}
 # Value request slots: id -> { event, result, prompt, task_id, expires_at }
 _value_pending: dict[str, dict] = {}
 
+# Choice request slots: id -> { event, result, prompt, options, task_id, expires_at }
+_choice_pending: dict[str, dict] = {}
+
 
 def _push(event_type: str, data: dict):
     msg = json.dumps({"type": event_type, **data})
@@ -59,6 +62,12 @@ class ApprovalRequest(BaseModel):
 
 class ValueRequest(BaseModel):
     prompt: str
+    task_id: str = ""
+
+
+class ChoiceRequest(BaseModel):
+    prompt: str
+    options: list[str]
     task_id: str = ""
 
 
@@ -214,6 +223,61 @@ async def cancel_value(req_id: str):
     slot["cancelled"][0] = True
     slot["event"].set()
     _push("value_resolved", {"id": req_id})
+    return {"ok": True}
+
+
+@app.post("/choice/request")
+async def request_choice(body: ChoiceRequest):
+    req_id = str(uuid.uuid4())
+    event = asyncio.Event()
+    expires_at = (datetime.now(timezone.utc).timestamp() + 600) * 1000
+    _choice_pending[req_id] = {
+        "event": event,
+        "result": [None],
+        "cancelled": [False],
+        "prompt": body.prompt,
+        "options": body.options,
+        "task_id": body.task_id,
+        "expires_at": expires_at,
+    }
+    _push("choice_requested", {
+        "id": req_id,
+        "prompt": body.prompt,
+        "options": body.options,
+        "task_id": body.task_id,
+        "expires_at": expires_at,
+    })
+    try:
+        await asyncio.wait_for(event.wait(), timeout=600)
+    except asyncio.TimeoutError:
+        _choice_pending.pop(req_id, None)
+        _push("choice_expired", {"id": req_id})
+        return {"value": None, "reason": "timeout"}
+    slot = _choice_pending.pop(req_id)
+    if slot["cancelled"][0]:
+        return {"value": None, "reason": "cancelled"}
+    return {"value": slot["result"][0]}
+
+
+@app.post("/choice/{req_id}/submit")
+async def submit_choice(req_id: str, body: dict):
+    if req_id not in _choice_pending:
+        raise HTTPException(404)
+    slot = _choice_pending[req_id]
+    slot["result"][0] = body.get("value", "")
+    slot["event"].set()
+    _push("choice_resolved", {"id": req_id})
+    return {"ok": True}
+
+
+@app.post("/choice/{req_id}/cancel")
+async def cancel_choice(req_id: str):
+    if req_id not in _choice_pending:
+        raise HTTPException(404)
+    slot = _choice_pending[req_id]
+    slot["cancelled"][0] = True
+    slot["event"].set()
+    _push("choice_resolved", {"id": req_id})
     return {"ok": True}
 
 
@@ -397,12 +461,17 @@ async def sse(request: Request):
                 {"id": id_, "prompt": s["prompt"], "task_id": s["task_id"], "expires_at": s["expires_at"]}
                 for id_, s in _value_pending.items()
             ]
+            pending_choices = [
+                {"id": id_, "prompt": s["prompt"], "options": s["options"], "task_id": s["task_id"], "expires_at": s["expires_at"]}
+                for id_, s in _choice_pending.items()
+            ]
             init = json.dumps({
                 "type": "init",
                 "builds": state.get_builds(),
                 "status_feed": state.get_status_feed(),
                 "pending_approvals": pending,
                 "pending_value_requests": pending_values,
+                "pending_choice_requests": pending_choices,
                 "tasks": state.get_tasks(),
                 "tools": state.get_tools(),
             })

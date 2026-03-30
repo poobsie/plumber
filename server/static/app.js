@@ -1,6 +1,7 @@
 ﻿const state = {
   approvals: {},
   builds: [],
+  choiceRequests: {},
   status: null,
   tasks: [],
   tools: [],
@@ -52,6 +53,9 @@ function handle(msg) {
       (msg.pending_value_requests || []).forEach((v) => {
         state.valueRequests[v.id] = { prompt: v.prompt, task_id: v.task_id, expiresAt: v.expires_at };
       });
+      (msg.pending_choice_requests || []).forEach((c) => {
+        state.choiceRequests[c.id] = { prompt: c.prompt, options: c.options, task_id: c.task_id, expiresAt: c.expires_at };
+      });
       renderAll();
       break;
     case "approval_requested":
@@ -72,6 +76,16 @@ function handle(msg) {
     case "value_resolved":
     case "value_expired":
       delete state.valueRequests[msg.id];
+      renderApprovals();
+      break;
+    case "choice_requested":
+      state.choiceRequests[msg.id] = { prompt: msg.prompt, options: msg.options, task_id: msg.task_id, expiresAt: msg.expires_at };
+      renderApprovals();
+      notify("Choice required", msg.prompt);
+      break;
+    case "choice_resolved":
+    case "choice_expired":
+      delete state.choiceRequests[msg.id];
       renderApprovals();
       break;
     case "status_update":
@@ -781,6 +795,10 @@ ${gitNote}
 - NEVER push or merge into ${baseBranch}. When the fix is verified by logs, use open_pr to create a draft PR.${task.jira_us ? `\n- PR title must be "${task.jira_us}: Brief description" - the jira number prefix is required.` : ""}
 - open_pr(task_id, repo, base, head, title, body): repo in "owner/repo" format, base="${baseBranch}".
 - Use jenkins_trigger (not curl/HTTP) to run the pipeline - approval required.
+- BEFORE calling jenkins_trigger you MUST call jenkins_get_params on the job to retrieve the full
+  parameter list. Go through each parameter, determine the correct value, request any credentials
+  via request_value, and assemble the complete params dict. Never trigger with an incomplete or
+  assumed parameter set.
 - When setting pipeline parameters, do NOT enable any parameter that publishes, archives, or uploads build artifacts. If unsure what a parameter does, leave it at its default value.
 - If a pipeline parameter requires a secret or credential (token, password, key), do NOT guess or hardcode it. Call request_value('${task.id}', 'description of what is needed') to prompt the user for it via the dashboard - the return value is the secret to use.
 - For multibranch pipelines: after pushing, call jenkins_scan('${task.jenkins_job}') first,
@@ -855,7 +873,8 @@ function renderApprovals() {
   const count = document.getElementById("approval-count");
   const approvalEntries = Object.entries(state.approvals);
   const valueEntries = Object.entries(state.valueRequests);
-  const total = approvalEntries.length + valueEntries.length;
+  const choiceEntries = Object.entries(state.choiceRequests);
+  const total = approvalEntries.length + valueEntries.length + choiceEntries.length;
 
   count.textContent = total;
   count.className = total ? "badge" : "badge zero";
@@ -890,7 +909,8 @@ function renderApprovals() {
       </div>`;
   }).join("");
   const valueHtml = valueEntries.map(([id, v]) => renderValueRequest(id, v)).join("");
-  list.innerHTML = approvalHtml + valueHtml;
+  const choiceHtml = choiceEntries.map(([id, c]) => renderChoiceRequest(id, c)).join("");
+  list.innerHTML = approvalHtml + valueHtml + choiceHtml;
 }
 
 function renderValueRequest(id, v) {
@@ -931,6 +951,37 @@ async function submitValue(id) {
 
 async function cancelValue(id) {
   await fetch(`/value/${id}/cancel`, { method: "POST" });
+}
+
+function renderChoiceRequest(id, c) {
+  const btns = c.options.map((opt) =>
+    `<button class="btn btn-ghost btn-sm" style="text-align:left" onclick="submitChoice('${id}', ${JSON.stringify(esc(opt))})">${ esc(opt)}</button>`
+  ).join("");
+  return `
+    <div class="approval-card git" data-choice-id="${id}">
+      <div class="approval-top">
+        <span class="action-badge git">choice required</span>
+        <span class="countdown" data-expires="${c.expiresAt}"></span>
+      </div>
+      <div style="padding:4px 14px 10px;font-size:12px;color:var(--text)">${esc(c.prompt)}</div>
+      <div style="padding:0 14px 12px;display:flex;flex-direction:column;gap:6px">${btns}</div>
+      <div class="approval-btns">
+        <button class="btn btn-reject" onclick="cancelChoice('${id}')">Cancel</button>
+      </div>
+    </div>`;
+}
+
+async function submitChoice(id, value) {
+  document.querySelectorAll(`[data-choice-id="${id}"] button`).forEach((b) => (b.disabled = true));
+  await fetch(`/choice/${id}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value }),
+  });
+}
+
+async function cancelChoice(id) {
+  await fetch(`/choice/${id}/cancel`, { method: "POST" });
 }
 
 function renderJenkinsTriggerApproval(id, a) {
