@@ -1,0 +1,636 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Plumber</title>
+  <link rel="icon" type="image/png" href="/icon.png">
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-hover: #1c2128;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --red: #f85149;
+      --orange: #d29922;
+      --blue: #388bfd;
+      --purple: #bc8cff;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 10;
+    }
+    header h1 { font-size: 14px; font-weight: 700; letter-spacing: 0.5px; flex: 1; }
+
+    #conn-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.3s;
+      flex-shrink: 0;
+    }
+    #conn-dot.connected { background: var(--green); }
+    #conn-dot.error { background: var(--red); }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    /* Sections */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .section-hdr {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(255,255,255,0.02);
+      user-select: none;
+    }
+    .section-hdr h2 {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin: 0;
+    }
+    .section-hdr .spacer { flex: 1; }
+    .section-hdr.collapsible { cursor: pointer; }
+    .section-hdr.collapsible:hover h2 { color: var(--text); }
+
+    .badge {
+      background: var(--red);
+      color: #fff;
+      border-radius: 10px;
+      min-width: 17px;
+      height: 17px;
+      padding: 0 5px;
+      font-size: 10px;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .badge-muted { background: var(--surface-hover); color: var(--muted); border: 1px solid var(--border); }
+    .badge.zero { display: none; }
+
+    .hdr-btn {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .hdr-btn:hover { opacity: 0.75; }
+
+    /* Rows */
+    .row {
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      min-height: 36px;
+      border-bottom: 1px solid rgba(48,54,61,0.6);
+      gap: 10px;
+    }
+    .row:last-child { border-bottom: none; }
+    .row.clickable { cursor: pointer; }
+    .row.clickable:hover { background: var(--surface-hover); }
+
+    .row-indicator {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .row-name {
+      font-weight: 600;
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .row-name.stub { color: var(--muted); font-style: italic; font-weight: 400; }
+    .row-meta { font-size: 11px; color: var(--muted); font-family: monospace; flex-shrink: 0; }
+    .row-tool { font-size: 11px; color: var(--muted); flex-shrink: 0; max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+
+    .row-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+    .btn-row {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      width: 26px;
+      height: 26px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+    .btn-row:hover { background: var(--surface-hover); color: var(--text); border-color: var(--muted); }
+    .btn-row.primary { color: var(--blue); border-color: rgba(56,139,253,0.4); }
+    .btn-row.primary:hover { background: rgba(56,139,253,0.1); }
+    .btn-row.success { color: var(--green); border-color: rgba(63,185,80,0.4); }
+    .btn-row.success:hover { background: rgba(63,185,80,0.1); }
+    .btn-row.danger { color: var(--red); border-color: rgba(248,81,73,0.3); }
+    .btn-row.danger:hover { background: rgba(248,81,73,0.1); }
+    .btn-row:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    /* Sub-rows (builds inside expanded task) */
+    .sub-rows { background: rgba(0,0,0,0.18); border-top: 1px solid var(--border); }
+    .sub-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 14px 5px 32px;
+      border-bottom: 1px solid rgba(48,54,61,0.4);
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .sub-row:last-child { border-bottom: none; }
+    .sub-row-logs-btn {
+      background: none;
+      border: none;
+      color: var(--blue);
+      cursor: pointer;
+      font-size: 11px;
+      padding: 0;
+      margin-left: auto;
+    }
+    .sub-row-logs-btn:hover { text-decoration: underline; }
+    .log-block { padding: 0 14px 10px 32px; background: rgba(0,0,0,0.18); }
+    .log-pre {
+      background: #010409;
+      color: #c9d1d9;
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      line-height: 1.5;
+      padding: 10px 12px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      max-height: 320px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .task-desc {
+      padding: 8px 14px 8px 32px;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(0,0,0,0.1);
+      border-top: 1px solid var(--border);
+    }
+
+    .task-inline-status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 6px 14px;
+      background: rgba(0,0,0,0.15);
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .task-inline-status .is-summary { flex: 1; color: var(--text); }
+    .task-inline-status .is-track { height: 2px; width: 100px; background: var(--border); border-radius: 2px; flex-shrink: 0; overflow: hidden; }
+    .task-inline-status .is-fill { height: 100%; background: var(--green); border-radius: 2px; transition: width 0.5s ease; }
+    .task-inline-status .is-pct { font-size: 14px; font-weight: 600; color: var(--green); font-variant-numeric: tabular-nums; }
+
+    /* Status pills */
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 7px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      flex-shrink: 0;
+    }
+    .pill-success  { background: rgba(63,185,80,.15);  color: var(--green);  border: 1px solid rgba(63,185,80,.35); }
+    .pill-failure  { background: rgba(248,81,73,.15);  color: var(--red);    border: 1px solid rgba(248,81,73,.35); }
+    .pill-running  { background: rgba(210,153,34,.15); color: var(--orange); border: 1px solid rgba(210,153,34,.35); }
+    .pill-unstable { background: rgba(210,153,34,.15); color: var(--orange); border: 1px solid rgba(210,153,34,.35); }
+    .pill-aborted, .pill-timed_out, .pill-unknown { background: rgba(139,148,158,.15); color: var(--muted); border: 1px solid rgba(139,148,158,.35); }
+
+    /* Tags */
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 8px;
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+    .tag-jira { background: rgba(56,139,253,.12); color: var(--blue); border: 1px solid rgba(56,139,253,.3); }
+    .tag-pr   { background: rgba(63,185,80,.12);  color: var(--green); border: 1px solid rgba(63,185,80,.3); }
+
+    /* Chevron */
+    .chevron { color: var(--muted); font-size: 10px; transition: transform 0.2s; display: inline-block; }
+    .chevron.open { transform: rotate(180deg); }
+
+    /* Quick-add stub form */
+    .quick-add {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(56,139,253,0.04);
+    }
+    .quick-add input {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 12px;
+      padding: 5px 8px;
+      font-family: inherit;
+      transition: border-color 0.15s;
+    }
+    .quick-add input:focus { outline: none; border-color: var(--blue); }
+    .quick-add .mono { font-family: monospace; width: 110px; }
+    .quick-add .flex1 { flex: 1; }
+    .quick-add button {
+      background: var(--surface-hover);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .quick-add button:hover { border-color: var(--blue); color: var(--blue); }
+    .quick-add button.cancel { color: var(--muted); }
+    .quick-add button.cancel:hover { border-color: var(--muted); color: var(--text); }
+
+    /* Form panels */
+    .form-panel { border-bottom: 1px solid var(--border); background: rgba(56,139,253,0.03); }
+    .form-panel-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    /* General buttons */
+    .btn {
+      padding: 5px 14px;
+      border-radius: 4px;
+      border: none;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.82; }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-primary { background: var(--blue); color: #fff; }
+    .btn-approve { background: var(--green); color: #0d1117; }
+    .btn-reject  { background: var(--surface-hover); color: var(--red); border: 1px solid rgba(248,81,73,.4); }
+    .btn-ghost   { background: var(--surface-hover); color: var(--text); border: 1px solid var(--border); }
+    .btn-sm { padding: 3px 10px; font-size: 12px; }
+
+    /* Form fields */
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 640px) { .form-row { grid-template-columns: 1fr; } }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .field input:not([type="radio"]), .field textarea, .field select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 12px;
+      padding: 6px 9px;
+      font-family: inherit;
+      transition: border-color 0.15s;
+    }
+    .field input:not([type="radio"]):focus, .field textarea:focus, .field select:focus { outline: none; border-color: var(--blue); }
+    .field input:read-only { opacity: 0.5; cursor: default; }
+    .field textarea { resize: vertical; min-height: 60px; }
+    .field select option { background: var(--surface); }
+    .radio-group { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+    .radio-label { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: normal; color: var(--text); cursor: pointer; }
+    .radio-label input[type="radio"] { accent-color: var(--blue); width: 13px; height: 13px; cursor: pointer; }
+    .field-hint { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    .params-list { display: flex; flex-direction: column; gap: 5px; }
+    .param-row { display: flex; gap: 6px; align-items: center; }
+    .param-row input { flex: 1; }
+    .param-row .rm-btn { background: none; border: none; color: var(--red); cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; }
+    .form-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+    /* Standalone status section */
+    #status-card { padding: 14px 16px; }
+    .status-row { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+    #status-summary { flex: 1; color: var(--text); }
+    #status-pct { font-size: 22px; font-weight: 600; color: var(--green); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+    .progress-track { height: 2px; background: var(--border); border-radius: 2px; margin: 8px 0 5px; overflow: hidden; }
+    #progress-fill { height: 100%; background: var(--green); border-radius: 2px; transition: width 0.5s ease; }
+    #status-time { font-size: 10px; color: var(--muted); }
+
+    /* Approvals */
+    .approval-card { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .approval-card:last-child { border-bottom: none; }
+    .approval-card.pr      { border-left: 3px solid var(--purple); }
+    .approval-card.git     { border-left: 3px solid var(--blue); }
+    .approval-card.jenkins { border-left: 3px solid var(--orange); }
+    .approval-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .action-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+    .action-badge.git     { background: rgba(56,139,253,.15); color: var(--blue);   border: 1px solid rgba(56,139,253,.35); }
+    .action-badge.jenkins { background: rgba(210,153,34,.15); color: var(--orange); border: 1px solid rgba(210,153,34,.35); }
+    .action-badge.pr      { background: rgba(188,140,255,.15); color: var(--purple); border: 1px solid rgba(188,140,255,.35); }
+    .countdown { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: auto; }
+    .countdown.urgent { color: var(--red); }
+    .ctx-table { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; margin-bottom: 10px; font-size: 12px; }
+    .ctx-key { color: var(--muted); }
+    .ctx-val { font-family: monospace; word-break: break-all; }
+    .approval-btns { display: flex; gap: 8px; }
+    .pr-preview-title { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .pr-preview-meta { font-size: 11px; color: var(--muted); font-family: monospace; margin-bottom: 8px; }
+    .pr-preview-body { background: #010409; border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; max-height: 260px; overflow-y: auto; font-size: 12px; line-height: 1.6; margin-bottom: 10px; }
+    .pr-preview-body h1, .pr-preview-body h2 { font-size: 12px; font-weight: 600; margin: 8px 0 3px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .pr-preview-body h3 { font-size: 12px; font-weight: 600; margin: 7px 0 2px; }
+    .pr-preview-body p { margin-bottom: 6px; }
+    .pr-preview-body ul, .pr-preview-body ol { margin: 0 0 6px 18px; }
+    .pr-preview-body code { background: rgba(110,118,129,.15); padding: 1px 4px; border-radius: 3px; font-family: 'Courier New', monospace; font-size: 10px; }
+    .pr-preview-body pre { background: var(--surface); padding: 8px 10px; border-radius: 4px; overflow-x: auto; margin-bottom: 6px; }
+    .pr-preview-body pre code { background: none; padding: 0; font-size: 11px; }
+
+    /* Modals */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 24px; }
+    .modal-overlay.hidden { display: none; }
+    .modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; max-width: 680px; width: 100%; display: flex; flex-direction: column; overflow: hidden; }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .modal-header h3 { font-size: 14px; font-weight: 600; }
+    .modal-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; line-height: 1; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: 16px; }
+    .modal-hint { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+    #prompt-text { background: #010409; color: #c9d1d9; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.6; padding: 12px; border-radius: 4px; border: 1px solid var(--border); white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow-y: auto; cursor: text; }
+    .modal-footer { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+    .copied-flash { color: var(--green); font-size: 12px; align-self: center; opacity: 0; transition: opacity 0.3s; }
+    .copied-flash.show { opacity: 1; }
+
+    .empty { color: var(--muted); font-size: 12px; padding: 12px 14px; display: block; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div id="conn-dot"></div>
+  <h1>Plumber</h1>
+  <button class="hdr-btn" onclick="openSettings()" title="Settings">&#9881;</button>
+</header>
+
+<main>
+
+  <!-- Approvals (hidden when empty) -->
+  <section class="section" id="approvals-section">
+    <div class="section-hdr">
+      <h2>Approvals</h2>
+      <span id="approval-count" class="badge">0</span>
+      <span class="spacer"></span>
+    </div>
+    <div id="approvals-list"></div>
+  </section>
+
+  <!-- Status (hidden when nothing running without a task) -->
+  <section class="section hidden" id="status-section">
+    <div class="section-hdr">
+      <h2>Status</h2>
+      <span class="spacer"></span>
+      <button class="hdr-btn" onclick="killStatus()">Kill</button>
+    </div>
+    <div id="status-card">
+      <div class="status-row">
+        <span id="status-summary"></span>
+        <span id="status-pct"></span>
+      </div>
+      <div class="progress-track"><div id="progress-fill" style="width:0%"></div></div>
+      <div id="status-time"></div>
+    </div>
+  </section>
+
+  <!-- Tasks -->
+  <section class="section">
+    <div class="section-hdr">
+      <h2>Tasks</h2>
+      <span id="task-count" class="badge badge-muted zero">0</span>
+      <span class="spacer"></span>
+      <button class="hdr-btn" onclick="toggleStubForm()" title="Quick-add a stub with just a Jira number">+ Stub</button>
+      <button class="hdr-btn" style="margin-left:4px" onclick="toggleForm()">+ Task</button>
+    </div>
+
+    <!-- Stub quick-add -->
+    <div id="stub-form" class="quick-add hidden">
+      <input id="stub-jira" class="mono" type="text" placeholder="LS-1234" onkeydown="if(event.key==='Enter')submitStub()">
+      <input id="stub-name" class="flex1" type="text" placeholder="Optional label" onkeydown="if(event.key==='Enter')submitStub()">
+      <button onclick="submitStub()">Add</button>
+      <button class="cancel" onclick="toggleStubForm()">Cancel</button>
+    </div>
+
+    <!-- Full task form -->
+    <div id="new-task-panel" class="form-panel hidden">
+      <div class="form-panel-body">
+        <form id="new-task-form" onsubmit="submitTask(event)">
+          <div class="form-row">
+            <div class="field">
+              <label>Branch / task name</label>
+              <input id="f-name" type="text" placeholder="Fix#username_blah" required>
+              <span id="multibranch-hint" class="hidden" style="font-size:10px;color:var(--orange);margin-top:2px">Multibranch pipeline - branch name selects which pipeline branch runs</span>
+            </div>
+            <div class="field">
+              <label>Tool</label>
+              <select id="f-tool" onchange="onToolSelect()" required>
+                <option value="">Select tool...</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label>Problem description</label>
+            <textarea id="f-desc" placeholder="Describe what needs to be fixed or implemented..." required></textarea>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label>Jira US <span style="font-weight:400;color:var(--muted);text-transform:none;letter-spacing:normal;font-size:10px">(optional)</span></label>
+              <input id="f-jira" type="text" placeholder="LS-1800">
+            </div>
+          </div>
+          <div class="field">
+            <label>Pipeline parameters <span id="params-label-extra" style="font-weight:400;color:var(--muted)"></span></label>
+            <div class="params-list" id="params-list"></div>
+            <button type="button" class="btn btn-ghost btn-sm" style="align-self:flex-start;margin-top:4px" onclick="addParam()">+ Add param</button>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" onclick="toggleForm()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Create task</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="tasks-list"></div>
+  </section>
+
+  <!-- Completed tasks (hidden when empty) -->
+  <section class="section hidden" id="completed-section">
+    <div class="section-hdr collapsible" onclick="toggleCompleted()">
+      <h2>Completed</h2>
+      <span id="completed-count" class="badge badge-muted">0</span>
+      <span class="spacer"></span>
+      <span id="completed-chevron" class="chevron">&#8964;</span>
+    </div>
+    <div id="completed-list" class="hidden"></div>
+  </section>
+
+  <!-- Tools -->
+  <section class="section">
+    <div class="section-hdr">
+      <h2>Tools</h2>
+      <span class="spacer"></span>
+      <button class="hdr-btn" onclick="toggleToolForm()">+ Add</button>
+    </div>
+
+    <div id="new-tool-panel" class="form-panel hidden">
+      <div class="form-panel-body">
+        <form id="new-tool-form" onsubmit="submitTool(event)">
+          <div class="form-row">
+            <div class="field">
+              <label>Tool name</label>
+              <input id="tf-name" type="text" placeholder="my-service" required>
+            </div>
+            <div class="field">
+              <label>Code repo URL</label>
+              <input id="tf-code-repo" type="text" placeholder="https://github.com/org/repo.git" required>
+            </div>
+          </div>
+          <div class="field">
+            <label>Pipeline location</label>
+            <div class="radio-group">
+              <label class="radio-label"><input type="radio" name="tf-pipeline-loc" value="pipeline_repo" checked onchange="updateToolForm()"> Separate pipeline repo</label>
+              <label class="radio-label"><input type="radio" name="tf-pipeline-loc" value="tool_repo" onchange="updateToolForm()"> Jenkinsfile in the code repo</label>
+              <label class="radio-label"><input type="radio" name="tf-pipeline-loc" value="jenkins" onchange="updateToolForm()"> Pipeline stored in Jenkins</label>
+            </div>
+          </div>
+          <div class="field" id="tf-pipeline-repo-field">
+            <label>Pipeline repo URL</label>
+            <input id="tf-pipeline-repo" type="text" placeholder="https://github.com/org/pipeline.git">
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label>Jenkins job</label>
+              <select id="tf-job" required>
+                <option value="">Loading jobs...</option>
+              </select>
+              <span id="tf-multibranch-hint" class="hidden" style="font-size:10px;color:var(--orange);margin-top:2px">Multibranch pipeline detected</span>
+            </div>
+            <div class="field">
+              <label>Base branch</label>
+              <input id="tf-base-branch" type="text" placeholder="pre_production" value="pre_production">
+              <span class="field-hint">Branch agent creates PRs/merges against.</span>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-ghost" onclick="toggleToolForm()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save tool</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div id="tools-list"></div>
+  </section>
+
+</main>
+
+<!-- Prompt modal -->
+<div id="prompt-modal" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3>Start task in Copilot</h3>
+      <button class="modal-close" onclick="closePrompt()">&#10005;</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-hint">Copy this prompt and paste it into the Copilot agent chat in VS Code.</p>
+      <div id="prompt-text"></div>
+    </div>
+    <div class="modal-footer">
+      <span class="copied-flash" id="copied-flash">Copied!</span>
+      <button class="btn btn-ghost" onclick="closePrompt()">Close</button>
+      <button class="btn btn-primary" onclick="copyPrompt()">Copy prompt</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div id="settings-modal" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-header">
+      <h3>Settings</h3>
+      <button class="modal-close" onclick="closeSettings()">&#10005;</button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
+      <div class="field">
+        <label>Default pipeline repo URL</label>
+        <input id="s-pipeline-repo" type="text" placeholder="https://github.com/org/pipeline.git">
+        <span class="field-hint">Pre-fills the pipeline repo field when adding a new tool.</span>
+      </div>
+      <div class="field">
+        <label>Jira host URL</label>
+        <input id="s-jira-host" type="text" placeholder="https://yourcompany.atlassian.net">
+        <span class="field-hint">Used to generate links to Jira stories on task cards.</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

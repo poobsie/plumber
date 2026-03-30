@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    },
+    "plumber": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "cwd": "${workspaceFolder}/server",
+      "env": {
+        "DASHBOARD_URL": "http://localhost:8755"
+      }
+    }
+  }
+}
