@@ -175,6 +175,9 @@ function openSettings() {
   document.getElementById("s-pipeline-repo").value = s.defaultPipelineRepo || "";
   document.getElementById("s-jira-host").value = s.jiraHost || "";
   document.getElementById("s-approval-mode").value = s.approvalMode || "always";
+  document.getElementById("s-webex-token").value = s.webexToken || "";
+  document.getElementById("s-webex-room").value = s.webexRoom || "";
+  document.getElementById("s-webex-webhook-url").value = s.webexWebhookUrl || "";
   document.getElementById("settings-modal").classList.remove("hidden");
 }
 
@@ -183,11 +186,26 @@ function closeSettings() {
 }
 
 function saveSettings() {
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+  const settings = {
     defaultPipelineRepo: document.getElementById("s-pipeline-repo").value.trim(),
     jiraHost: document.getElementById("s-jira-host").value.trim(),
     approvalMode: document.getElementById("s-approval-mode").value,
-  }));
+    webexToken: document.getElementById("s-webex-token").value.trim(),
+    webexRoom: document.getElementById("s-webex-room").value.trim(),
+    webexWebhookUrl: document.getElementById("s-webex-webhook-url").value.trim(),
+  };
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  if (settings.webexToken && settings.webexRoom && settings.webexWebhookUrl) {
+    fetch("/webex/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token: settings.webexToken,
+        room: settings.webexRoom,
+        webhook_url: settings.webexWebhookUrl,
+      }),
+    }).catch(() => {});
+  }
   closeSettings();
 }
 
@@ -310,8 +328,12 @@ async function onToolJobSelect(job) {
 
 function updateToolForm() {
   const loc = document.querySelector('input[name="tf-pipeline-loc"]:checked')?.value;
-  const field = document.getElementById("tf-pipeline-repo-field");
-  if (field) field.style.display = loc === "pipeline_repo" ? "" : "none";
+  const repoField = document.getElementById("tf-pipeline-repo-field");
+  const jenkinsFields = document.getElementById("tf-jenkins-fields");
+  const jobInput = document.getElementById("tf-job");
+  if (repoField) repoField.style.display = loc === "pipeline_repo" ? "" : "none";
+  if (jenkinsFields) jenkinsFields.style.display = loc === "none" ? "none" : "";
+  if (jobInput) jobInput.required = loc !== "none";
 }
 
 async function submitTool(e) {
@@ -349,6 +371,7 @@ function editTool(id) {
           { value: "pipeline_repo", label: "Separate pipeline repo" },
           { value: "tool_repo",     label: "Jenkinsfile in code repo" },
           { value: "jenkins",       label: "Stored in Jenkins" },
+          { value: "none",          label: "None (local testing)" },
         ]
       },
       { id: "pipeline_repo", label: "Pipeline repo URL", value: t.pipeline_repo },
@@ -366,7 +389,7 @@ function editTool(id) {
 }
 
 function pipelineLocationLabel(loc) {
-  return { pipeline_repo: "separate repo", tool_repo: "code repo", jenkins: "in Jenkins" }[loc] || loc;
+  return { pipeline_repo: "separate repo", tool_repo: "code repo", jenkins: "in Jenkins", none: "local testing" }[loc] || loc;
 }
 
 function renderTools() {
@@ -385,7 +408,7 @@ function renderTools() {
         <span class="tool-card-name" title="${esc(t.name)}">${esc(t.name)}</span>
       </div>
       <div class="tool-card-body">
-        <div class="tool-card-row"><span class="tool-card-key">job</span><span class="tool-card-val" title="${esc(t.jenkins_job)}">${esc(t.jenkins_job)}</span></div>
+        ${t.jenkins_job ? `<div class="tool-card-row"><span class="tool-card-key">job</span><span class="tool-card-val" title="${esc(t.jenkins_job)}">${esc(t.jenkins_job)}</span></div>` : ""}
         <div class="tool-card-row"><span class="tool-card-key">code</span><span class="tool-card-val" title="${esc(t.code_repo)}">${esc(t.code_repo.replace(/^https?:\/\//, ""))}</span></div>
         <div class="tool-card-row"><span class="tool-card-key">pipeline</span><span class="tool-card-val">${pipelineLocationLabel(t.pipeline_location)}</span></div>
         <div class="tool-card-row"><span class="tool-card-key">base</span><span class="tool-card-val">${esc(t.base_branch || "pre_production")}</span></div>
@@ -522,6 +545,10 @@ async function onToolSelect() {
   document.getElementById("params-label-extra").textContent = "";
   document.getElementById("params-list").innerHTML = "";
   if (!tool) return;
+  if (tool.pipeline_location === "none") {
+    document.getElementById("params-label-extra").textContent = "(local testing - no pipeline)";
+    return;
+  }
   if (tool.is_multibranch) document.getElementById("multibranch-hint").classList.remove("hidden");
   document.getElementById("params-label-extra").textContent = "(loading...)";
   // For multibranch pipelines, the parent job has no param definitions - they live on branch jobs.
@@ -820,18 +847,49 @@ function showPrompt(taskOrId) {
     .map(([k, v]) => `  ${k}: ${v}`)
     .join("\n") || "  (none)";
 
+  const baseBranch = task.base_branch || "pre_production";
+  const branchNote = `- After cloning, immediately check whether branch '${task.branch}' already exists on the remote: run \`git fetch origin\` then \`git branch -r\` and look for origin/${task.branch}. If it exists, check it out with \`git checkout ${task.branch}\` (do NOT call git_create_branch - the branch is already there). If it does not exist, then call git_create_branch. Never start investigating the codebase until you are on the correct branch.`;
+
+  if (task.pipeline_location === "none") {
+    const prompt = `Task: ${task.name}
+
+Code repo:   ${task.code_repo}
+Branch:      ${task.branch}
+Base branch: ${baseBranch}
+
+Problem:
+${task.description}
+
+Pipeline params:
+${params}
+
+Instructions:
+- Call post_status('${task.id}', 'your summary', percent) with your initial plan before making any changes.
+- Clone the repo: git_clone('${task.id}', 'code') - returns the local path, checks out ${baseBranch}
+${branchNote}
+- Make the required changes.
+- Run tests locally to verify. Check the repo for the test framework and run commands (e.g. pytest, npm test, cargo test). If you cannot determine the test command, call request_value('${task.id}', 'what command should be used to run the tests?') to ask via the dashboard.
+- If a secret or credential is needed, call request_value('${task.id}', 'description of what is needed') to prompt via the dashboard.
+- Use git_push (not raw git) to push the branch - approval required.
+- NEVER push or merge into ${baseBranch}. Once verified, use open_pr to create a draft PR.${task.jira_us ? `\n- PR title must be "${task.jira_us}: Brief description" - the jira number prefix is required.` : ""}
+- open_pr(task_id, repo, base, head, title, body): repo in "owner/repo" format, base="${baseBranch}".
+- Call post_status('${task.id}', 'summary', percent) after each significant step with an honest % estimate.
+- If a push is rejected, stop and explain what you intended and why.`;
+    document.getElementById("prompt-text").textContent = prompt;
+    document.getElementById("prompt-modal").classList.remove("hidden");
+    return;
+  }
+
   const pipelineLines = {
     pipeline_repo: `Pipeline repo: ${task.pipeline_repo}`,
     tool_repo:     `Pipeline:      Jenkinsfile in code repo`,
     jenkins:       `Pipeline:      Stored in Jenkins`,
   };
   const pipelineLine = pipelineLines[task.pipeline_location] || `Pipeline repo: ${task.pipeline_repo}`;
-  const baseBranch = task.base_branch || "pre_production";
   const multibranch = task.is_multibranch
     ? `\nMultibranch pipeline: branch '${task.branch}' determines which pipeline branch runs (job path: ${task.jenkins_job})\n`
     : "";
   const needsPipelineClone = task.pipeline_location === "pipeline_repo";
-  const branchNote = `- After cloning, immediately check whether branch '${task.branch}' already exists on the remote: run \`git fetch origin\` then \`git branch -r\` and look for origin/${task.branch}. If it exists, check it out with \`git checkout ${task.branch}\` (do NOT call git_create_branch - the branch is already there). If it does not exist, then call git_create_branch. Never start investigating the codebase until you are on the correct branch.`;
   const cloneSteps = needsPipelineClone
     ? `- git_clone('${task.id}', 'code') - clones code repo, checks out ${baseBranch}\n- git_clone('${task.id}', 'pipeline') - clones pipeline repo, checks out ${baseBranch}`
     : `- git_clone('${task.id}', 'code') - clones code repo, checks out ${baseBranch}`;

@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import state
+import webex
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -134,6 +135,9 @@ async def request_approval(body: ApprovalRequest):
         "context": body.context,
         "expires_at": expires_at,
     })
+    asyncio.get_event_loop().run_in_executor(
+        None, webex.send_approval, approval_id, body.action, body.context
+    )
     try:
         await asyncio.wait_for(event.wait(), timeout=600)
     except asyncio.TimeoutError:
@@ -192,6 +196,9 @@ async def request_value(body: ValueRequest):
         "task_id": body.task_id,
         "expires_at": expires_at,
     })
+    asyncio.get_event_loop().run_in_executor(
+        None, webex.send_input_request, body.prompt, body.task_id or None, state.get_tasks()
+    )
     try:
         await asyncio.wait_for(event.wait(), timeout=600)
     except asyncio.TimeoutError:
@@ -247,6 +254,9 @@ async def request_choice(body: ChoiceRequest):
         "task_id": body.task_id,
         "expires_at": expires_at,
     })
+    asyncio.get_event_loop().run_in_executor(
+        None, webex.send_choice_request, body.prompt, body.options, body.task_id or None, state.get_tasks()
+    )
     try:
         await asyncio.wait_for(event.wait(), timeout=600)
     except asyncio.TimeoutError:
@@ -290,6 +300,58 @@ async def post_status(body: StatusReport):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "task_id": body.task_id or None,
     })
+    asyncio.get_event_loop().run_in_executor(
+        None, webex.send_status, body.summary, body.percent_complete, body.task_id or None, state.get_tasks()
+    )
+    return {"ok": True}
+
+
+class WebexConfig(BaseModel):
+    token: str
+    room: str
+    webhook_url: str
+
+
+@app.post("/webex/config")
+async def configure_webex(body: WebexConfig):
+    asyncio.get_event_loop().run_in_executor(
+        None, webex.configure, body.token, body.room, body.webhook_url
+    )
+    return {"ok": True}
+
+
+@app.post("/webex/webhook")
+async def webex_webhook(request: Request):
+    """Receive Adaptive Card button clicks from Webex."""
+    payload = await request.json()
+    # Webex sends the action id; fetch the actual inputs from the API
+    action_id = (payload.get("data") or {}).get("id")
+    if not action_id:
+        return {"ok": True}
+
+    try:
+        import requests as _req
+        r = _req.get(
+            f"https://webexapis.com/v1/attachment/actions/{action_id}",
+            headers={"Authorization": f"Bearer {webex._token}"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        inputs = r.json().get("inputs", {})
+    except Exception:
+        return {"ok": True}
+
+    plumber_action = inputs.get("plumber_action")
+    approval_id = inputs.get("approval_id")
+
+    if plumber_action in ("approve", "reject") and approval_id:
+        approved = plumber_action == "approve"
+        if approval_id in _pending:
+            slot = _pending[approval_id]
+            slot["result"][0] = approved
+            slot["event"].set()
+            _push("approval_resolved", {"id": approval_id, "approved": approved})
+
     return {"ok": True}
 
 
