@@ -11,6 +11,15 @@
 const expandedTasks = new Set();
 let completedOpen = false;
 
+// Approval mode cache - survives for the page session only
+const _approvedKeys = new Set();
+
+function stableStringify(v) {
+  if (typeof v !== "object" || v === null) return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  return "{" + Object.keys(v).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
+}
+
 // --- SSE ---
 
 let sse, reconnectTimer;
@@ -58,11 +67,19 @@ function handle(msg) {
       });
       renderAll();
       break;
-    case "approval_requested":
+    case "approval_requested": {
       state.approvals[msg.id] = { action: msg.action, context: msg.context, expiresAt: msg.expires_at };
-      renderApprovals();
-      notify("Approval required", msg.action + (msg.context?.branch ? ` \u2192 ${msg.context.branch}` : ""));
+      const _mode = getSettings().approvalMode || "always";
+      if (_mode === "allow-all") {
+        respond(msg.id, true);
+      } else if (_mode === "auto-match" && _approvedKeys.has(msg.action + ":" + stableStringify(msg.context))) {
+        respond(msg.id, true);
+      } else {
+        renderApprovals();
+        notify("Approval required", msg.action + (msg.context?.branch ? ` \u2192 ${msg.context.branch}` : ""));
+      }
       break;
+    }
     case "approval_resolved":
     case "approval_expired":
       delete state.approvals[msg.id];
@@ -157,6 +174,7 @@ function openSettings() {
   const s = getSettings();
   document.getElementById("s-pipeline-repo").value = s.defaultPipelineRepo || "";
   document.getElementById("s-jira-host").value = s.jiraHost || "";
+  document.getElementById("s-approval-mode").value = s.approvalMode || "always";
   document.getElementById("settings-modal").classList.remove("hidden");
 }
 
@@ -168,8 +186,14 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify({
     defaultPipelineRepo: document.getElementById("s-pipeline-repo").value.trim(),
     jiraHost: document.getElementById("s-jira-host").value.trim(),
+    approvalMode: document.getElementById("s-approval-mode").value,
   }));
   closeSettings();
+}
+
+function clearApprovedKeys() {
+  _approvedKeys.clear();
+  notify("Cleared", "Remembered approvals cleared.");
 }
 
 // --- Edit modal ---
@@ -213,21 +237,39 @@ async function saveEditModal() {
   closeEditModal();
 }
 
+// --- Tab switching ---
+
+let activeTab = "tasks";
+
+function switchTab(name) {
+  activeTab = name;
+  document.querySelectorAll(".tab").forEach((el) => {
+    el.classList.toggle("active", el.dataset.tab === name);
+  });
+  document.querySelectorAll(".tab-panel").forEach((el) => {
+    el.classList.toggle("active", el.id === `panel-${name}`);
+  });
+}
+
 // --- Tools ---
 
 let currentToolInfo = null;
 let _allJobs = [];
 
-function toggleToolForm() {
-  const panel = document.getElementById("new-tool-panel");
-  const open = panel.classList.toggle("hidden");
-  if (!open) {
-    loadToolJobs();
-    const s = getSettings();
-    const field = document.getElementById("tf-pipeline-repo");
-    if (s.defaultPipelineRepo && !field.value) field.value = s.defaultPipelineRepo;
-  }
+function openToolModal() {
+  loadToolJobs();
+  const s = getSettings();
+  const field = document.getElementById("tf-pipeline-repo");
+  if (s.defaultPipelineRepo && !field.value) field.value = s.defaultPipelineRepo;
+  document.getElementById("tool-modal").classList.remove("hidden");
 }
+
+function closeToolModal() {
+  document.getElementById("tool-modal").classList.add("hidden");
+}
+
+// keep old name for legacy calls
+function toggleToolForm() { openToolModal(); }
 
 async function loadToolJobs() {
   const input = document.getElementById("tf-job");
@@ -287,7 +329,7 @@ async function submitTool(e) {
   e.target.reset();
   updateToolForm();
   currentToolInfo = null;
-  toggleToolForm();
+  closeToolModal();
 }
 
 async function deleteTool(id) {
@@ -328,20 +370,29 @@ function pipelineLocationLabel(loc) {
 }
 
 function renderTools() {
-  const list = document.getElementById("tools-list");
+  const grid = document.getElementById("tools-grid");
+  const countEl = document.getElementById("tools-count");
+  countEl.textContent = state.tools.length;
+  countEl.className = state.tools.length ? "badge badge-muted" : "badge badge-muted zero";
   if (!state.tools.length) {
-    list.innerHTML = '<span class="empty">No tools configured</span>';
+    grid.innerHTML = '<span class="empty">No tools configured. Click "+ Add tool" to get started.</span>';
     return;
   }
-  list.innerHTML = state.tools.map((t) => `
-    <div class="row">
-      <span class="row-indicator" style="background:var(--purple)"></span>
-      <span class="row-name">${esc(t.name)}</span>
-      <span class="row-meta">${esc(t.jenkins_job)}</span>
-      <span class="row-tool">${esc(t.code_repo.replace(/^https?:\/\//, ""))}</span>
-      <span style="font-size:10px;color:var(--muted);flex-shrink:0">${pipelineLocationLabel(t.pipeline_location)}</span>
-      <span style="font-size:10px;color:var(--muted);flex-shrink:0">base: ${esc(t.base_branch || "pre_production")}</span>
-      <div class="row-actions" style="margin-left:auto">        <button class="btn-row" title="Edit" onclick="editTool('${esc(t.id)}')">&#9998;</button>        <button class="btn-row danger" title="Delete" onclick="deleteTool('${esc(t.id)}')">&#10005;</button>
+  grid.innerHTML = state.tools.map((t) => `
+    <div class="tool-card">
+      <div class="tool-card-hdr">
+        <span class="tool-card-dot"></span>
+        <span class="tool-card-name" title="${esc(t.name)}">${esc(t.name)}</span>
+      </div>
+      <div class="tool-card-body">
+        <div class="tool-card-row"><span class="tool-card-key">job</span><span class="tool-card-val" title="${esc(t.jenkins_job)}">${esc(t.jenkins_job)}</span></div>
+        <div class="tool-card-row"><span class="tool-card-key">code</span><span class="tool-card-val" title="${esc(t.code_repo)}">${esc(t.code_repo.replace(/^https?:\/\//, ""))}</span></div>
+        <div class="tool-card-row"><span class="tool-card-key">pipeline</span><span class="tool-card-val">${pipelineLocationLabel(t.pipeline_location)}</span></div>
+        <div class="tool-card-row"><span class="tool-card-key">base</span><span class="tool-card-val">${esc(t.base_branch || "pre_production")}</span></div>
+      </div>
+      <div class="tool-card-footer">
+        <button class="btn-row" title="Edit" onclick="editTool('${esc(t.id)}')">&#9998;</button>
+        <button class="btn-row danger" title="Delete" onclick="deleteTool('${esc(t.id)}')">&#10005;</button>
       </div>
     </div>`).join("");
 }
@@ -351,17 +402,11 @@ function renderTools() {
 function expandStub(id) {
   const t = state.tasks.find((t) => t.id === id);
   if (!t) return;
-  // Open the full task form and pre-fill from stub
-  const panel = document.getElementById("new-task-panel");
-  if (panel.classList.contains("hidden")) {
-    panel.classList.remove("hidden");
-    populateToolSelect();
-  }
+  openTaskModal();
   if (t.name) document.getElementById("f-name").value = t.name;
   if (t.jira_us) document.getElementById("f-jira").value = t.jira_us;
-  // Store the stub id so we can delete it on submit
-  panel.dataset.stubId = id;
-  panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const modal = document.getElementById("task-modal");
+  modal.dataset.stubId = id;
   document.getElementById("f-name").focus();
 }
 
@@ -408,15 +453,19 @@ function editTask(id) {
   });
 }
 
-// --- Stub task ---
+// --- Stub modal ---
 
-function toggleStubForm() {
-  const form = document.getElementById("stub-form");
-  form.classList.toggle("hidden");
-  if (!form.classList.contains("hidden")) {
-    document.getElementById("stub-jira").focus();
-  }
+function openStubModal() {
+  document.getElementById("stub-modal").classList.remove("hidden");
+  setTimeout(() => document.getElementById("stub-jira").focus(), 50);
 }
+
+function closeStubModal() {
+  document.getElementById("stub-modal").classList.add("hidden");
+}
+
+// keep old name for legacy calls
+function toggleStubForm() { openStubModal(); }
 
 async function submitStub() {
   const jira = document.getElementById("stub-jira").value.trim();
@@ -429,23 +478,29 @@ async function submitStub() {
   });
   document.getElementById("stub-jira").value = "";
   document.getElementById("stub-name").value = "";
-  document.getElementById("stub-form").classList.add("hidden");
+  closeStubModal();
 }
 
-// --- Full task form ---
+// --- Full task modal ---
 
 let paramCount = 0;
 let currentJobInfo = null;
 
-function toggleForm() {
-  const panel = document.getElementById("new-task-panel");
-  panel.classList.toggle("hidden");
-  if (!panel.classList.contains("hidden")) {
-    populateToolSelect();
-  } else {
-    delete panel.dataset.stubId;
-  }
+function openTaskModal() {
+  populateToolSelect();
+  document.getElementById("task-modal").classList.remove("hidden");
+  document.getElementById("task-modal-title").textContent = "New task";
+  setTimeout(() => document.getElementById("f-name").focus(), 50);
 }
+
+function closeTaskModal() {
+  const modal = document.getElementById("task-modal");
+  modal.classList.add("hidden");
+  delete modal.dataset.stubId;
+}
+
+// keep old name for legacy calls
+function toggleForm() { openTaskModal(); }
 
 function populateToolSelect() {
   const sel = document.getElementById("f-tool");
@@ -538,10 +593,10 @@ async function submitTask(e) {
   }).then((r) => r.json());
 
   // If expanding a stub, delete it
-  const panel = document.getElementById("new-task-panel");
-  const stubId = panel.dataset.stubId;
+  const modal = document.getElementById("task-modal");
+  const stubId = modal.dataset.stubId;
   if (stubId) {
-    delete panel.dataset.stubId;
+    delete modal.dataset.stubId;
     await fetch(`/tasks/${stubId}`, { method: "DELETE" });
   }
 
@@ -550,7 +605,7 @@ async function submitTask(e) {
   document.getElementById("multibranch-hint").classList.add("hidden");
   document.getElementById("params-label-extra").textContent = "";
   currentJobInfo = null;
-  toggleForm();
+  closeTaskModal();
   showPrompt(task);
 }
 
@@ -579,12 +634,23 @@ function toggleCompleted() {
 }
 
 function renderTasks() {
-  const active = state.tasks.filter((t) => !t.completed);
+  const filterEl = document.getElementById("task-filter");
+  const filter = filterEl ? filterEl.value.toLowerCase().trim() : "";
+
+  const allActive = state.tasks.filter((t) => !t.completed);
   const completed = state.tasks.filter((t) => t.completed);
 
+  const active = filter
+    ? allActive.filter((t) =>
+        (t.name || "").toLowerCase().includes(filter) ||
+        (t.jira_us || "").toLowerCase().includes(filter) ||
+        (t.description || "").toLowerCase().includes(filter)
+      )
+    : allActive;
+
   const countEl = document.getElementById("task-count");
-  countEl.textContent = active.length;
-  countEl.className = active.length ? "badge badge-muted" : "badge badge-muted zero";
+  countEl.textContent = allActive.length;
+  countEl.className = allActive.length ? "badge badge-muted" : "badge badge-muted zero";
 
   const list = document.getElementById("tasks-list");
   list.innerHTML = active.length
@@ -801,8 +867,9 @@ ${gitNote}
   assumed parameter set.
 - When setting pipeline parameters, do NOT enable any parameter that publishes, archives, or uploads build artifacts. If unsure what a parameter does, leave it at its default value.
 - If a pipeline parameter requires a secret or credential (token, password, key), do NOT guess or hardcode it. Call request_value('${task.id}', 'description of what is needed') to prompt the user for it via the dashboard - the return value is the secret to use.
-- For multibranch pipelines: after pushing, call jenkins_scan('${task.jenkins_job}') first,
-  wait 15s, then trigger the branch job. The branch job won't exist until Jenkins scans.
+- For multibranch pipelines: attempt jenkins_trigger directly. Only call jenkins_scan if the
+  trigger fails because the branch job does not exist - then wait 15s and retry. Do NOT scan
+  proactively after every push.
 - After jenkins_trigger, immediately call jenkins_wait - this blocks until the build finishes.
   Do NOT call anything else between jenkins_trigger and jenkins_wait.
 - After jenkins_wait returns, call jenkins_logs and verify the output shows the fix worked.
@@ -831,14 +898,27 @@ async function deleteTask(id) {
   await fetch(`/tasks/${id}`, { method: "DELETE" });
 }
 
-document.getElementById("prompt-modal").addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) closePrompt();
+["prompt-modal", "settings-modal", "edit-modal", "stub-modal", "task-modal", "tool-modal"].forEach((id) => {
+  document.getElementById(id).addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) {
+      if (id === "prompt-modal") closePrompt();
+      else if (id === "settings-modal") closeSettings();
+      else if (id === "edit-modal") closeEditModal();
+      else if (id === "stub-modal") closeStubModal();
+      else if (id === "task-modal") closeTaskModal();
+      else if (id === "tool-modal") closeToolModal();
+    }
+  });
 });
-document.getElementById("settings-modal").addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) closeSettings();
-});
-document.getElementById("edit-modal").addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) closeEditModal();
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!document.getElementById("prompt-modal").classList.contains("hidden")) { closePrompt(); return; }
+  if (!document.getElementById("settings-modal").classList.contains("hidden")) { closeSettings(); return; }
+  if (!document.getElementById("edit-modal").classList.contains("hidden")) { closeEditModal(); return; }
+  if (!document.getElementById("stub-modal").classList.contains("hidden")) { closeStubModal(); return; }
+  if (!document.getElementById("task-modal").classList.contains("hidden")) { closeTaskModal(); return; }
+  if (!document.getElementById("tool-modal").classList.contains("hidden")) { closeToolModal(); return; }
 });
 
 // --- Approvals ---
@@ -864,13 +944,19 @@ function renderPrApproval(id, a) {
 
 async function respond(id, approved) {
   document.querySelectorAll(`.approval-card[data-id="${id}"] .btn`).forEach((b) => (b.disabled = true));
+  if (approved && (getSettings().approvalMode || "always") === "auto-match") {
+    const a = state.approvals[id];
+    if (a) _approvedKeys.add(a.action + ":" + stableStringify(a.context));
+  }
   await fetch(`/approval/${id}/${approved ? "approve" : "reject"}`, { method: "POST" });
 }
 
 function renderApprovals() {
-  const section = document.getElementById("approvals-section");
+  const drawer = document.getElementById("approvals-drawer");
   const list = document.getElementById("approvals-list");
   const count = document.getElementById("approval-count");
+  const label = document.getElementById("approval-label");
+  const drawerCount = document.getElementById("drawer-count");
   const approvalEntries = Object.entries(state.approvals);
   const valueEntries = Object.entries(state.valueRequests);
   const choiceEntries = Object.entries(state.choiceRequests);
@@ -878,14 +964,16 @@ function renderApprovals() {
 
   count.textContent = total;
   count.className = total ? "badge" : "badge zero";
+  label.classList.toggle("hidden", !total);
+  drawerCount.textContent = total;
 
   if (!total) {
-    section.classList.add("hidden");
+    drawer.classList.add("empty");
     list.innerHTML = "";
     return;
   }
 
-  section.classList.remove("hidden");
+  drawer.classList.remove("empty");
   const approvalHtml = approvalEntries.map(([id, a]) => {
     if (a.action === "open_pr") return renderPrApproval(id, a);
     if (a.action === "jenkins_trigger") return renderJenkinsTriggerApproval(id, a);
@@ -1009,20 +1097,18 @@ function renderJenkinsTriggerApproval(id, a) {
     </div>`;
 }
 
-// --- Status (orphaned - not linked to a task) ---
+// --- Status (header pill) ---
 
 function renderStatus() {
-  const section = document.getElementById("status-section");
+  const pill = document.getElementById("hdr-status");
   if (!state.status || state.status.task_id) {
-    section.classList.add("hidden");
+    pill.classList.remove("visible");
     return;
   }
-  section.classList.remove("hidden");
-  const { summary, pct, timestamp } = state.status;
-  document.getElementById("status-summary").textContent = summary;
-  document.getElementById("status-pct").textContent = `${pct}%`;
-  document.getElementById("progress-fill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
-  document.getElementById("status-time").textContent = relTime(timestamp);
+  const { summary, pct } = state.status;
+  pill.classList.add("visible");
+  document.getElementById("hdr-status-text").textContent = summary;
+  document.getElementById("hdr-status-pct").textContent = `${pct}%`;
 }
 
 async function killStatus() {

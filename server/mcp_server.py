@@ -187,7 +187,8 @@ def git_push(repo_path: str, branch_name: str, remote: str = "origin") -> str:
 @mcp.tool()
 def jenkins_scan(job: str) -> str:
     """Trigger a multibranch pipeline scan so Jenkins discovers new/deleted branches.
-    Call this after pushing a new branch, before trying to trigger the branch job.
+    Only call this if jenkins_trigger fails because the branch job does not exist yet.
+    Do NOT call this proactively after every push - only as a fallback when the branch is missing.
     Requires human approval - scanning kicks off builds for every branch Jenkins finds."""
     if not _approve("jenkins_scan", {"job": job}):
         return "Scan rejected."
