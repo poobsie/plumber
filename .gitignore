@@ -2,3 +2,4 @@ tools/
 .env
 server/state.json
 workspace/
+server/__pycache__/
