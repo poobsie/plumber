@@ -595,7 +595,7 @@ async def sync_reviews(tool_id: str = None):
 async def add_review(body: dict):
     """Manually add a PR by URL. Works for any author."""
     url = body.get("pr_url", body.get("url", "")).strip()
-    m = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
+    m = re.search(r"https?://[^/]+/([^/]+/[^/]+)/pull/(\d+)", url)
     if not m:
         raise HTTPException(400, "Invalid GitHub PR URL")
     repo = m.group(1)

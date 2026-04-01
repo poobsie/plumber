@@ -2,13 +2,19 @@ import os
 import re
 import requests
 
-_BASE = "https://api.github.com"
+# For GitHub Enterprise set GITHUB_API_URL=https://your-host/api/v3
+# and GITHUB_HOST=your-host (used when parsing web URLs).
+# For github.com, leave both unset.
 _HEADERS = {
     "Accept": "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
 _authed_user = None
+
+
+def _base():
+    return os.getenv("GITHUB_API_URL", "https://api.github.com").rstrip("/")
 
 
 def _token():
@@ -20,7 +26,7 @@ def _get(path, params=None):
     if not tok:
         raise RuntimeError("GITHUB_TOKEN not set")
     r = requests.get(
-        f"{_BASE}{path}",
+        f"{_base()}{path}",
         params=params,
         headers={**_HEADERS, "Authorization": f"Bearer {tok}"},
         timeout=20,
@@ -37,9 +43,10 @@ def get_authed_user() -> dict:
 
 
 def repo_from_url(url: str) -> str:
-    """Extract 'owner/repo' from a GitHub clone or web URL."""
+    """Extract 'owner/repo' from a GitHub clone or web URL (any host)."""
     url = url.rstrip("/").removesuffix(".git")
-    m = re.search(r"github\.com[/:](.+/.+)$", url)
+    # Match any hostname - github.com, GitHub Enterprise, etc.
+    m = re.search(r"(?:https?://|git@)[^/:]+[/:](.+/.+)$", url)
     if not m:
         raise ValueError(f"Cannot parse GitHub repo from URL: {url}")
     return m.group(1)
