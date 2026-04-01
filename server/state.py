@@ -108,3 +108,66 @@ def delete_tool(tool_id: str):
     s = _load()
     s["tools"] = [t for t in s.get("tools", []) if t["id"] != tool_id]
     _save(s)
+
+
+def save_review(review: dict) -> dict:
+    s = _load()
+    s.setdefault("reviews", [])
+    s["reviews"] = [r for r in s["reviews"] if r["id"] != review["id"]]
+    s["reviews"].insert(0, review)
+    _save(s)
+    return review
+
+
+def get_reviews() -> list:
+    return _load().get("reviews", [])
+
+
+def get_review(review_id: str) -> dict | None:
+    return next((r for r in get_reviews() if r["id"] == review_id), None)
+
+
+def delete_review(review_id: str):
+    s = _load()
+    s["reviews"] = [r for r in s.get("reviews", []) if r["id"] != review_id]
+    _save(s)
+
+
+def delete_reviews_for_repo(repo: str, keep_ids: set):
+    """Remove reviews for a specific repo that are not in keep_ids (i.e. their PR was closed)."""
+    s = _load()
+    s["reviews"] = [
+        r for r in s.get("reviews", [])
+        if r.get("repo") != repo or r["id"] in keep_ids
+    ]
+    _save(s)
+
+
+def add_annotation(review_id: str, annotation: dict) -> dict | None:
+    s = _load()
+    for r in s.get("reviews", []):
+        if r["id"] == review_id:
+            r.setdefault("annotations", [])
+            r["annotations"].append(annotation)
+            _save(s)
+            return annotation
+    return None
+
+
+def delete_annotation(review_id: str, annotation_id: str):
+    s = _load()
+    for r in s.get("reviews", []):
+        if r["id"] == review_id:
+            r["annotations"] = [a for a in r.get("annotations", []) if a["id"] != annotation_id]
+            _save(s)
+            return
+
+
+def update_review(review_id: str, updates: dict) -> dict | None:
+    s = _load()
+    for r in s.get("reviews", []):
+        if r["id"] == review_id:
+            r.update(updates)
+            _save(s)
+            return r
+    return None

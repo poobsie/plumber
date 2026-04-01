@@ -451,6 +451,100 @@
     .copied-flash { color: var(--green); font-size: 12px; align-self: center; opacity: 0; transition: opacity 0.3s; }
     .copied-flash.show { opacity: 1; }
 
+    /* ── Review panel ────────────────────────── */
+    .review-panel {
+      position: fixed; inset: 0; z-index: 50;
+      background: var(--bg); display: flex; flex-direction: column; overflow: hidden;
+    }
+    .review-panel.hidden { display: none !important; }
+    .review-panel-hdr {
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 14px; height: 44px; border-bottom: 1px solid var(--border);
+      background: var(--surface); flex-shrink: 0;
+    }
+    .review-panel-hdr h2 { font-size: 13px; font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .review-panel-body { display: flex; flex: 1; overflow: hidden; }
+    .review-files-sidebar {
+      width: 240px; flex-shrink: 0; border-right: 1px solid var(--border);
+      overflow-y: auto; background: var(--surface);
+    }
+    .review-files-sidebar-hdr {
+      font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase;
+      letter-spacing: 0.6px; padding: 8px 12px 4px; position: sticky; top: 0;
+      background: var(--surface); border-bottom: 1px solid var(--border); z-index: 1;
+    }
+    .review-file-item {
+      display: flex; align-items: center; gap: 6px; padding: 5px 12px;
+      cursor: pointer; font-size: 11px; border-bottom: 1px solid rgba(48,54,61,0.4);
+      transition: background 0.1s;
+    }
+    .review-file-item:hover { background: var(--surface-hover); }
+    .review-file-item.active { background: rgba(56,139,253,0.08); color: var(--blue); }
+    .review-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; font-size: 10px; }
+    .review-file-stat { font-size: 10px; flex-shrink: 0; font-family: monospace; }
+    .review-file-status-added    { color: var(--green); }
+    .review-file-status-modified { color: var(--orange); }
+    .review-file-status-removed  { color: var(--red); }
+    .review-file-status-renamed  { color: var(--purple); }
+    .review-diff-area { flex: 1; overflow-y: auto; padding: 14px; }
+    .review-diff-file { margin-bottom: 20px; }
+    .review-diff-file-hdr {
+      font-size: 11px; font-family: monospace; font-weight: 600;
+      padding: 6px 10px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 4px 4px 0 0; color: var(--muted);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .review-diff-file-hdr .fname { color: var(--text); flex: 1; }
+    .annotation-block {
+      margin: 2px 0; padding: 6px 10px; border-radius: 3px;
+      font-size: 11px; line-height: 1.4; border-left: 3px solid;
+    }
+    .annotation-block.error   { background: rgba(248,81,73,.08);  border-color: var(--red);    color: var(--red); }
+    .annotation-block.warning { background: rgba(210,153,34,.08); border-color: var(--orange); color: var(--orange); }
+    .annotation-block.info    { background: rgba(56,139,253,.08); border-color: var(--blue);   color: var(--blue); }
+    .annotation-block .ann-meta { font-size: 10px; opacity: 0.75; margin-bottom: 2px; }
+    .annotation-block .ann-body { color: var(--text); }
+    .gh-comment-block {
+      margin: 2px 0; padding: 6px 10px; border-radius: 3px;
+      background: rgba(188,140,255,.06); border-left: 3px solid var(--purple);
+      font-size: 11px; line-height: 1.4;
+    }
+    .gh-comment-block .ann-meta { font-size: 10px; color: var(--purple); opacity: 0.85; margin-bottom: 2px; }
+    .gh-comment-block .ann-body { color: var(--text); }
+    /* diff2html overrides to match dark theme */
+    .d2h-wrapper { border: 1px solid var(--border); border-top: none; border-radius: 0 0 4px 4px; overflow: hidden; font-size: 11px; }
+    .d2h-file-wrapper { border: none; margin: 0; }
+    .d2h-file-header { display: none; }
+    .d2h-code-wrapper { border-collapse: collapse; width: 100%; }
+    .d2h-code-line { background: #010409; color: #c9d1d9; padding: 0 10px; line-height: 1.5; }
+    .d2h-code-line-ctn { font-family: 'Courier New', monospace; white-space: pre-wrap; word-break: break-all; }
+    .d2h-ins { background: rgba(63,185,80,.15); }
+    .d2h-del { background: rgba(248,81,73,.12); }
+    .d2h-info { background: rgba(139,148,158,.08); color: var(--muted); font-style: italic; }
+    .d2h-code-line-prefix { color: var(--muted); user-select: none; }
+    .d2h-ins .d2h-code-line-prefix { color: var(--green); }
+    .d2h-del .d2h-code-line-prefix { color: var(--red); }
+    .line-num { color: var(--muted); user-select: none; text-align: right; padding: 0 8px; min-width: 36px; background: rgba(0,0,0,.2); font-family: monospace; font-size: 10px; border-right: 1px solid var(--border); }
+
+    /* ── Review cards ────────────────────────── */
+    .review-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      overflow: hidden; margin-bottom: 8px; transition: border-color 0.15s;
+    }
+    .review-card:hover { border-color: var(--muted); }
+    .review-card-hdr {
+      display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .review-card-title { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .review-card-body { padding: 6px 12px; display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+    .review-card-row { display: flex; gap: 6px; align-items: center; overflow: hidden; }
+    .review-card-footer { display: flex; gap: 6px; padding: 7px 12px; border-top: 1px solid var(--border); justify-content: flex-end; align-items: center; }
+    .review-card-footer .review-summary-preview { flex: 1; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
+    .tag-mine   { background: rgba(63,185,80,.12);  color: var(--green);  border: 1px solid rgba(63,185,80,.3); }
+    .tag-other  { background: rgba(139,148,158,.12); color: var(--muted);  border: 1px solid rgba(139,148,158,.3); }
+    .tag-draft  { background: rgba(210,153,34,.1);  color: var(--orange); border: 1px solid rgba(210,153,34,.3); }
+
     .empty { color: var(--muted); font-size: 12px; padding: 12px 14px; display: block; }
     .hidden { display: none !important; }
   </style>
@@ -476,6 +570,9 @@
 <div class="tab-bar" id="tab-bar">
   <div class="tab active" data-tab="tasks" onclick="switchTab('tasks')">
     Tasks <span id="task-count" class="badge badge-muted zero">0</span>
+  </div>
+  <div class="tab" data-tab="reviews" onclick="switchTab('reviews')">
+    Reviews <span id="reviews-count" class="badge badge-muted zero">0</span>
   </div>
   <div class="tab" data-tab="tools" onclick="switchTab('tools')">
     Tools <span id="tools-count" class="badge badge-muted zero">0</span>
@@ -521,6 +618,20 @@
     </div>
   </div>
 
+  <!-- ── Reviews tab ── -->
+  <div class="tab-panel" id="panel-reviews">
+    <div class="toolbar">
+      <div class="toolbar-spacer"></div>
+      <button class="hdr-btn" id="reviews-sync-btn" onclick="syncReviews()" title="Fetch open PRs from all tools">&#8635; Sync</button>
+      <button class="hdr-btn" onclick="openAddPrModal()" style="margin-left:2px">+ Add PR</button>
+    </div>
+    <div class="scroll-area">
+      <div style="padding:14px">
+        <div id="reviews-list"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Tools tab ── -->
   <div class="tab-panel" id="panel-tools">
     <div class="toolbar">
@@ -534,6 +645,30 @@
     </div>
   </div>
 
+</div>
+
+<!-- ── PR Viewer Panel ── -->
+<div id="review-panel" class="review-panel hidden">
+  <div class="review-panel-hdr">
+    <button class="btn-row" onclick="closeReviewPanel()" title="Back to Reviews" style="font-size:16px">&#8592;</button>
+    <h2 id="review-panel-title"></h2>
+    <span id="review-panel-meta" style="font-size:11px;color:var(--muted);font-family:monospace;flex-shrink:0"></span>
+    <span id="review-panel-status-dot" class="row-indicator" style="flex-shrink:0"></span>
+    <div style="flex:1"></div>
+    <span id="review-panel-ann-count" style="font-size:11px;color:var(--muted);flex-shrink:0"></span>
+    <button id="review-panel-start-btn" class="hdr-btn" onclick="showReviewPrompt()" style="margin-left:8px">&#9654; Start Review</button>
+    <button id="review-panel-convert-btn" class="hdr-btn hidden" onclick="convertReviewToTask()" style="margin-left:4px;color:var(--green);border-color:rgba(63,185,80,0.4)">&#8594; Convert to Task</button>
+    <a id="review-panel-gh-link" href="#" target="_blank" rel="noopener" class="hdr-btn" style="margin-left:4px;text-decoration:none">&#128279; GitHub</a>
+  </div>
+  <div class="review-panel-body">
+    <div class="review-files-sidebar">
+      <div class="review-files-sidebar-hdr">Changed files</div>
+      <div id="review-files-list"></div>
+    </div>
+    <div class="review-diff-area" id="review-diff-area">
+      <span class="empty">Select a file to view its diff.</span>
+    </div>
+  </div>
 </div>
 
 <!-- ══ Modals ══════════════════════════════════ -->
@@ -746,6 +881,31 @@
   </div>
 </div>
 
+<!-- Add PR modal -->
+<div id="add-pr-modal" class="modal-overlay hidden">
+  <div class="modal-box" style="max-width:460px">
+    <div class="modal-header">
+      <h3>Add PR for review</h3>
+      <button class="modal-close" onclick="closeAddPrModal()">&#10005;</button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+      <div class="field">
+        <label>GitHub PR URL</label>
+        <input id="add-pr-url" type="text" placeholder="https://github.com/owner/repo/pull/123"
+               onkeydown="if(event.key==='Enter')submitAddPr()">
+        <span class="field-hint">Works for any PR - yours or someone else's.</span>
+      </div>
+      <div id="add-pr-error" style="color:var(--red);font-size:11px;display:none"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeAddPrModal()">Cancel</button>
+      <button class="btn btn-primary" id="add-pr-submit" onclick="submitAddPr()">Add PR</button>
+    </div>
+  </div>
+</div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/diff2html@3.4.47/bundles/css/diff2html.min.css">
+<script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.47/bundles/js/diff2html.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js"></script>
 <script src="app.js"></script>
 </body>

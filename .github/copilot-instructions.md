@@ -35,7 +35,7 @@ This is the most important section.
 - If something adjacent is genuinely broken, flag it. Don't silently fix it without comment.
 - Defensive coding is fine at system boundaries (user input, external APIs). Internal code doesn't need it.
 
-## Endgame tools
+## Plumber tools
 This workspace provides MCP tools. Use them - don't route around them with raw shell commands.
 
 **Git** - always use these instead of direct git commands:

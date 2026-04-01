@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import uuid
 import webbrowser
@@ -20,10 +21,12 @@ from pydantic import BaseModel
 
 import state
 import webex
+import github as gh
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 PORT = int(os.getenv("DASHBOARD_PORT", "8755"))
+REVIEW_SYNC_INTERVAL = int(os.getenv("REVIEW_SYNC_INTERVAL_MINUTES", "10")) * 60
 
 # SSE: each connected client gets its own queue
 _subscribers: list[asyncio.Queue] = []
@@ -42,6 +45,94 @@ def _push(event_type: str, data: dict):
     msg = json.dumps({"type": event_type, **data})
     for q in _subscribers:
         q.put_nowait(msg)
+
+
+async def _sync_tool_prs(tool: dict):
+    """Fetch open user-authored PRs for a tool's repo and upsert into reviews state."""
+    try:
+        repo_url = tool.get("code_repo", "")
+        if not repo_url:
+            return
+        repo = gh.repo_from_url(repo_url)
+        user = gh.get_authed_user()
+        username = user["login"]
+        open_prs = gh.get_open_prs_by_user(username, repo)
+        kept_ids = set()
+        for item in open_prs:
+            pr_number = item["number"]
+            try:
+                pr = gh.get_pr(repo, pr_number)
+                files = gh.get_pr_files(repo, pr_number)
+                comments = gh.get_pr_comments(repo, pr_number)
+                reviews = gh.get_pr_reviews(repo, pr_number)
+            except Exception:
+                continue
+            existing = next(
+                (r for r in state.get_reviews() if r.get("repo") == repo and r.get("pr_number") == pr_number),
+                None,
+            )
+            review_id = existing["id"] if existing else str(uuid.uuid4())
+            kept_ids.add(review_id)
+            review = {
+                "id": review_id,
+                "tool_id": tool["id"],
+                "pr_number": pr_number,
+                "repo": repo,
+                "title": pr.get("title", ""),
+                "head_branch": pr["head"]["ref"],
+                "base_branch": pr["base"]["ref"],
+                "author": pr["user"]["login"],
+                "authored_by_me": True,
+                "draft": pr.get("draft", False),
+                "pr_body": pr.get("body", "") or "",
+                "pr_url": pr.get("html_url", ""),
+                "changed_files": [
+                    {
+                        "filename": f.get("filename", ""),
+                        "status": f.get("status", ""),
+                        "additions": f.get("additions", 0),
+                        "deletions": f.get("deletions", 0),
+                        "patch": f.get("patch", ""),
+                    }
+                    for f in files
+                ],
+                "github_comments": [
+                    {
+                        "id": c.get("id"),
+                        "user": c["user"]["login"] if c.get("user") else "",
+                        "body": c.get("body", ""),
+                        "path": c.get("path", ""),
+                        "line": c.get("line") or c.get("original_line"),
+                        "created_at": c.get("created_at", ""),
+                    }
+                    for c in comments
+                ],
+                "github_reviews": [
+                    {
+                        "id": rv.get("id"),
+                        "user": rv["user"]["login"] if rv.get("user") else "",
+                        "state": rv.get("state", ""),
+                        "body": rv.get("body", "") or "",
+                        "submitted_at": rv.get("submitted_at", ""),
+                    }
+                    for rv in reviews
+                ],
+                "annotations": existing.get("annotations", []) if existing else [],
+                "status": existing.get("status", "pending") if existing else "pending",
+                "review_summary": existing.get("review_summary") if existing else None,
+                "converted_task_id": existing.get("converted_task_id") if existing else None,
+                "workspace_path": existing.get("workspace_path") if existing else None,
+            }
+            state.save_review(review)
+            _push("review_updated", review)
+        # Remove reviews for PRs that are no longer open
+        state.delete_reviews_for_repo(repo, kept_ids)
+        # Push deletions for any that disappeared
+        for r in state.get_reviews():
+            if r.get("repo") == repo and r["id"] not in kept_ids:
+                _push("review_deleted", {"id": r["id"]})
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -67,8 +158,15 @@ async def lifespan(app: FastAPI):
                         None, webex.on_resolved, approval_id, approved, "Webex reaction"
                     )
 
+    async def _review_sync_loop():
+        while True:
+            await asyncio.sleep(REVIEW_SYNC_INTERVAL)
+            for tool in state.get_tools():
+                await _sync_tool_prs(tool)
+
     asyncio.create_task(_open())
     asyncio.create_task(_webex_poll())
+    asyncio.create_task(_review_sync_loop())
     yield
 
 
@@ -134,6 +232,14 @@ class Task(BaseModel):
     jira_us: str = ""
     pr_url: str = ""
     pr_number: int = 0
+
+
+class Annotation(BaseModel):
+    file_path: str
+    line: int | None = None
+    comment: str
+    severity: str = "info"  # info | warning | error
+    author: str = "agent"   # agent | user
 
 
 @app.post("/approval/request")
@@ -375,6 +481,7 @@ async def create_tool(body: Tool):
     tool["id"] = str(uuid.uuid4())
     state.save_tool(tool)
     _push("tool_updated", tool)
+    asyncio.create_task(_sync_tool_prs(tool))
     return tool
 
 
@@ -383,9 +490,19 @@ async def update_tool(tool_id: str, body: dict):
     tool = state.get_tool(tool_id)
     if not tool:
         raise HTTPException(404)
+    old_repo = tool.get("code_repo", "")
     tool.update(body)
     state.save_tool(tool)
     _push("tool_updated", tool)
+    # If code_repo changed, drop reviews for old repo that don't match new one
+    new_repo = tool.get("code_repo", "")
+    if old_repo != new_repo and old_repo:
+        try:
+            old_owner_repo = gh.repo_from_url(old_repo)
+            state.delete_reviews_for_repo(old_owner_repo, set())
+        except Exception:
+            pass
+    asyncio.create_task(_sync_tool_prs(tool))
     return tool
 
 
@@ -442,7 +559,244 @@ async def remove_task(task_id: str):
     return {"ok": True}
 
 
-@app.get("/jenkins/jobs")
+# ── Reviews ──────────────────────────────────────────────────────────────────
+
+@app.get("/reviews")
+async def get_reviews():
+    return state.get_reviews()
+
+
+@app.get("/reviews/{review_id}")
+async def get_review(review_id: str):
+    r = state.get_review(review_id)
+    if not r:
+        raise HTTPException(404)
+    return r
+
+
+@app.delete("/reviews/{review_id}")
+async def remove_review(review_id: str):
+    state.delete_review(review_id)
+    _push("review_deleted", {"id": review_id})
+    return {"ok": True}
+
+
+@app.post("/reviews/sync")
+async def sync_reviews(tool_id: str = None):
+    tools = state.get_tools()
+    if tool_id:
+        tools = [t for t in tools if t["id"] == tool_id]
+    for tool in tools:
+        asyncio.create_task(_sync_tool_prs(tool))
+    return {"ok": True, "syncing": len(tools)}
+
+
+@app.post("/reviews")
+async def add_review(body: dict):
+    """Manually add a PR by URL. Works for any author."""
+    url = body.get("pr_url", body.get("url", "")).strip()
+    m = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", url)
+    if not m:
+        raise HTTPException(400, "Invalid GitHub PR URL")
+    repo = m.group(1)
+    pr_number = int(m.group(2))
+
+    # Check if already tracked
+    existing = next(
+        (r for r in state.get_reviews() if r.get("repo") == repo and r.get("pr_number") == pr_number),
+        None,
+    )
+    if existing:
+        return existing
+
+    loop = asyncio.get_event_loop()
+    try:
+        pr = await loop.run_in_executor(None, lambda: gh.get_pr(repo, pr_number))
+        files = await loop.run_in_executor(None, lambda: gh.get_pr_files(repo, pr_number))
+        comments = await loop.run_in_executor(None, lambda: gh.get_pr_comments(repo, pr_number))
+        reviews = await loop.run_in_executor(None, lambda: gh.get_pr_reviews(repo, pr_number))
+        user = await loop.run_in_executor(None, gh.get_authed_user)
+    except Exception as e:
+        raise HTTPException(502, f"GitHub API error: {e}")
+
+    # Auto-associate tool by matching code_repo URL
+    tool_id = None
+    try:
+        for t in state.get_tools():
+            if gh.repo_from_url(t.get("code_repo", "")) == repo:
+                tool_id = t["id"]
+                break
+    except Exception:
+        pass
+
+    review = {
+        "id": str(uuid.uuid4()),
+        "tool_id": tool_id,
+        "pr_number": pr_number,
+        "repo": repo,
+        "title": pr.get("title", ""),
+        "head_branch": pr["head"]["ref"],
+        "base_branch": pr["base"]["ref"],
+        "author": pr["user"]["login"],
+        "authored_by_me": pr["user"]["login"] == user["login"],
+        "draft": pr.get("draft", False),
+        "pr_body": pr.get("body", "") or "",
+        "pr_url": pr.get("html_url", ""),
+        "changed_files": [
+            {
+                "filename": f.get("filename", ""),
+                "status": f.get("status", ""),
+                "additions": f.get("additions", 0),
+                "deletions": f.get("deletions", 0),
+                "patch": f.get("patch", ""),
+            }
+            for f in files
+        ],
+        "github_comments": [
+            {
+                "id": c.get("id"),
+                "user": c["user"]["login"] if c.get("user") else "",
+                "body": c.get("body", ""),
+                "path": c.get("path", ""),
+                "line": c.get("line") or c.get("original_line"),
+                "created_at": c.get("created_at", ""),
+            }
+            for c in comments
+        ],
+        "github_reviews": [
+            {
+                "id": rv.get("id"),
+                "user": rv["user"]["login"] if rv.get("user") else "",
+                "state": rv.get("state", ""),
+                "body": rv.get("body", "") or "",
+                "submitted_at": rv.get("submitted_at", ""),
+            }
+            for rv in reviews
+        ],
+        "annotations": [],
+        "status": "pending",
+        "review_summary": None,
+        "converted_task_id": None,
+        "workspace_path": None,
+    }
+    state.save_review(review)
+    _push("review_updated", review)
+    return review
+
+
+@app.patch("/reviews/{review_id}")
+async def update_review(review_id: str, body: dict):
+    r = state.get_review(review_id)
+    if not r:
+        raise HTTPException(404)
+    updated = state.update_review(review_id, body)
+    _push("review_updated", updated)
+    return updated
+
+
+@app.post("/reviews/{review_id}/annotations")
+async def add_annotation(review_id: str, body: Annotation):
+    r = state.get_review(review_id)
+    if not r:
+        raise HTTPException(404)
+    annotation = body.model_dump()
+    annotation["id"] = str(uuid.uuid4())
+    annotation["created_at"] = datetime.now(timezone.utc).isoformat()
+    result = state.add_annotation(review_id, annotation)
+    # Update status to reviewing if still pending
+    if r.get("status") == "pending":
+        state.update_review(review_id, {"status": "reviewing"})
+    updated = state.get_review(review_id)
+    _push("review_updated", updated)
+    return result
+
+
+@app.delete("/reviews/{review_id}/annotations/{annotation_id}")
+async def remove_annotation(review_id: str, annotation_id: str):
+    r = state.get_review(review_id)
+    if not r:
+        raise HTTPException(404)
+    state.delete_annotation(review_id, annotation_id)
+    updated = state.get_review(review_id)
+    _push("review_updated", updated)
+    return {"ok": True}
+
+
+@app.post("/reviews/{review_id}/convert-to-task")
+async def convert_review_to_task(review_id: str):
+    r = state.get_review(review_id)
+    if not r:
+        raise HTTPException(404)
+    if r.get("converted_task_id"):
+        existing_task = state.get_task(r["converted_task_id"])
+        if existing_task:
+            return existing_task
+
+    # Build annotation summary grouped by file
+    annotations = r.get("annotations", [])
+    by_file: dict[str, list] = {}
+    for a in annotations:
+        fp = a.get("file_path", "unknown")
+        by_file.setdefault(fp, []).append(a)
+
+    lines = [f"Address review comments for PR #{r['pr_number']}: {r['title']}", f"Repo: {r['repo']}  |  {r['head_branch']} -> {r['base_branch']}", ""]
+    if r.get("review_summary"):
+        lines += [f"Review summary: {r['review_summary']}", ""]
+    if by_file:
+        lines.append("Issues to address:")
+        for fp, anns in by_file.items():
+            lines.append(f"\n{fp}:")
+            for a in anns:
+                line_ref = f"line {a['line']}: " if a.get("line") else ""
+                lines.append(f"  [{a['severity'].upper()}] {line_ref}{a['comment']}")
+    else:
+        lines.append("(No annotations - review the PR and apply any needed fixes.)")
+
+    description = "\n".join(lines)
+
+    tool_id = r.get("tool_id")
+    if not tool_id:
+        # Try to find a matching tool by repo
+        try:
+            for t in state.get_tools():
+                if gh.repo_from_url(t.get("code_repo", "")) == r["repo"]:
+                    tool_id = t["id"]
+                    break
+        except Exception:
+            pass
+
+    task = {
+        "id": str(uuid.uuid4()),
+        "name": f"PR #{r['pr_number']}: {r['title']}",
+        "tool_id": tool_id or "",
+        "branch": r.get("head_branch", ""),
+        "description": description,
+        "static_params": {},
+        "completed": False,
+        "status": "pending",
+        "jira_us": "",
+        "pr_url": r.get("pr_url", ""),
+        "pr_number": r.get("pr_number", 0),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if tool_id:
+        tool = state.get_tool(tool_id)
+        if tool:
+            task["code_repo"] = tool["code_repo"]
+            task["pipeline_location"] = tool["pipeline_location"]
+            task["is_multibranch"] = tool["is_multibranch"]
+            task["base_branch"] = tool.get("base_branch", "pre_production")
+            task["pipeline_repo"] = tool.get("pipeline_repo", "") if tool["pipeline_location"] == "pipeline_repo" else (tool["code_repo"] if tool["pipeline_location"] == "tool_repo" else "")
+            task["jenkins_job"] = f"{tool['jenkins_job']}/{r['head_branch']}" if tool["is_multibranch"] else tool["jenkins_job"]
+    else:
+        task.update({"code_repo": "", "pipeline_repo": "", "jenkins_job": "", "is_multibranch": False, "pipeline_location": "none", "base_branch": "pre_production"})
+
+    state.save_task(task)
+    _push("task_updated", task)
+    state.update_review(review_id, {"converted_task_id": task["id"]})
+    updated_review = state.get_review(review_id)
+    _push("review_updated", updated_review)
+    return task
 async def list_jenkins_jobs():
     try:
         from jenkins import Jenkins
@@ -520,6 +874,7 @@ async def sse(request: Request):
                 "pending_choice_requests": pending_choices,
                 "tasks": state.get_tasks(),
                 "tools": state.get_tools(),
+                "reviews": state.get_reviews(),
             })
             yield f"data: {init}\n\n"
             while True:

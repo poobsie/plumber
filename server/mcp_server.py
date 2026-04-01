@@ -412,7 +412,124 @@ def open_pr(task_id: str, repo: str, base: str, head: str, title: str, body: str
             )
         except Exception:
             pass
+        # Trigger review sync for this task's tool so the new PR is ingested immediately
+        try:
+            task_resp = requests.get(f"{DASHBOARD}/tasks/{task_id}", timeout=5)
+            tool_id = task_resp.json().get("tool_id", "")
+            if tool_id:
+                requests.post(f"{DASHBOARD}/reviews/sync?tool_id={tool_id}", timeout=5)
+        except Exception:
+            pass
         return json.dumps({"pr_url": pr_url, "pr_number": pr_number})
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+
+
+# ── Review tools ──────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def review_clone(review_id: str) -> str:
+    """Clone the repo for a review and check out the PR's head branch.
+    Returns the local path to the cloned repo. Call this before reviewing files."""
+    def log(msg):
+        print(f"[review_clone] {msg}", file=sys.stderr, flush=True)
+    try:
+        resp = requests.get(f"{DASHBOARD}/reviews/{review_id}", timeout=10)
+        resp.raise_for_status()
+        review = resp.json()
+    except Exception as e:
+        return f"ERROR: could not fetch review: {e}"
+
+    url = f"https://github.com/{review['repo']}.git"
+    head_branch = review.get("head_branch", "")
+    if not head_branch:
+        return "ERROR: review has no head_branch"
+
+    dest = WORKSPACE_ROOT / review_id / "code"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    if (dest / ".git").exists():
+        log("already cloned, fetching latest")
+        _git(["fetch", "--prune", "origin"], str(dest), timeout=60)
+    else:
+        log(f"cloning {url}")
+        code, _, err = _git(["clone", url, "."], str(dest), timeout=120)
+        if code != 0:
+            return f"ERROR: clone failed: {err}"
+
+    log(f"checking out {head_branch}")
+    rc, out, _ = _git(["ls-remote", "--heads", "origin", head_branch], str(dest))
+    if rc == 0 and head_branch in out:
+        _, _, err = _git(["checkout", "--track", f"origin/{head_branch}"], str(dest))
+        _, _, _ = _git(["pull", "--ff-only", "origin", head_branch], str(dest))
+    else:
+        code, _, err = _git(["checkout", head_branch], str(dest))
+        if code != 0:
+            return f"ERROR: could not checkout {head_branch}: {err}"
+
+    workspace_path = str(dest)
+    try:
+        requests.patch(
+            f"{DASHBOARD}/reviews/{review_id}",
+            json={"workspace_path": workspace_path, "status": "reviewing"},
+            timeout=5,
+        )
+    except Exception:
+        pass
+    return workspace_path
+
+
+@mcp.tool()
+def review_get_files(review_id: str) -> str:
+    """Get all changed files for a review, including their unified diffs.
+    Returns a JSON list of {filename, status, additions, deletions, patch}."""
+    try:
+        resp = requests.get(f"{DASHBOARD}/reviews/{review_id}", timeout=10)
+        resp.raise_for_status()
+        review = resp.json()
+    except Exception as e:
+        return f"ERROR: could not fetch review: {e}"
+    files = review.get("changed_files", [])
+    return json.dumps(files)
+
+
+@mcp.tool()
+def review_annotate(review_id: str, file_path: str, line: int, comment: str, severity: str = "warning") -> str:
+    """Add an annotation to a review. Call this for each issue found.
+    file_path: path within the repo (e.g. 'src/auth.py').
+    line: line number in the new file (+ side of the diff).
+    comment: description of the issue.
+    severity: 'error' for bugs/security issues, 'warning' for code quality, 'info' for suggestions."""
+    if severity not in ("error", "warning", "info"):
+        severity = "warning"
+    try:
+        resp = requests.post(
+            f"{DASHBOARD}/reviews/{review_id}/annotations",
+            json={"file_path": file_path, "line": line, "comment": comment, "severity": severity, "author": "agent"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return "Annotation added."
+    except Exception as e:
+        return f"ERROR: {e}"
+
+
+@mcp.tool()
+def review_complete(review_id: str, summary: str) -> str:
+    """Mark a review as complete with an overall summary.
+    summary: 2-5 sentences summarising the overall quality, key issues found, and any notable strengths."""
+    try:
+        resp = requests.patch(
+            f"{DASHBOARD}/reviews/{review_id}",
+            json={"status": "reviewed", "review_summary": summary},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return "Review marked complete."
     except Exception as e:
         return f"ERROR: {e}"
 

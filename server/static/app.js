@@ -2,11 +2,14 @@
   approvals: {},
   builds: [],
   choiceRequests: {},
+  reviews: [],
   status: null,
   tasks: [],
   tools: [],
   valueRequests: {},
 };
+
+let _activeReviewId = null;
 
 const expandedTasks = new Set();
 let completedOpen = false;
@@ -53,6 +56,7 @@ function handle(msg) {
   switch (msg.type) {
     case "init":
       state.builds = msg.builds || [];
+      state.reviews = msg.reviews || [];
       state.tasks = msg.tasks || [];
       state.tools = msg.tools || [];
       if (msg.status_feed && msg.status_feed.length) state.status = msg.status_feed[0];
@@ -145,6 +149,19 @@ function handle(msg) {
       state.tools = state.tools.filter((t) => t.id !== msg.id);
       renderTools();
       break;
+    case "review_updated": {
+      const i = state.reviews.findIndex((r) => r.id === msg.id);
+      if (i >= 0) state.reviews[i] = msg;
+      else state.reviews.unshift(msg);
+      renderReviews();
+      if (_activeReviewId === msg.id) _renderReviewPanel(msg);
+      break;
+    }
+    case "review_deleted":
+      state.reviews = state.reviews.filter((r) => r.id !== msg.id);
+      if (_activeReviewId === msg.id) closeReviewPanel();
+      renderReviews();
+      break;
   }
 }
 
@@ -153,6 +170,7 @@ function renderAll() {
   renderStatus();
   renderTasks();
   renderTools();
+  renderReviews();
 }
 
 // --- Settings ---
@@ -950,7 +968,7 @@ async function deleteTask(id) {
   await fetch(`/tasks/${id}`, { method: "DELETE" });
 }
 
-["prompt-modal", "settings-modal", "edit-modal", "stub-modal", "task-modal", "tool-modal"].forEach((id) => {
+["prompt-modal", "settings-modal", "edit-modal", "stub-modal", "task-modal", "tool-modal", "add-pr-modal"].forEach((id) => {
   document.getElementById(id).addEventListener("click", (e) => {
     if (e.target === e.currentTarget) {
       if (id === "prompt-modal") closePrompt();
@@ -959,12 +977,15 @@ async function deleteTask(id) {
       else if (id === "stub-modal") closeStubModal();
       else if (id === "task-modal") closeTaskModal();
       else if (id === "tool-modal") closeToolModal();
+      else if (id === "add-pr-modal") closeAddPrModal();
     }
   });
 });
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (!document.getElementById("add-pr-modal").classList.contains("hidden")) { closeAddPrModal(); return; }
+  if (!document.getElementById("review-panel").classList.contains("hidden")) { closeReviewPanel(); return; }
   if (!document.getElementById("prompt-modal").classList.contains("hidden")) { closePrompt(); return; }
   if (!document.getElementById("settings-modal").classList.contains("hidden")) { closeSettings(); return; }
   if (!document.getElementById("edit-modal").classList.contains("hidden")) { closeEditModal(); return; }
@@ -1195,6 +1216,272 @@ function relTime(ts) {
   if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
   return new Date(ts).toLocaleDateString();
+}
+
+// --- Reviews ---
+
+const STATUS_DOT = { pending: "var(--muted)", reviewing: "var(--orange)", reviewed: "var(--green)" };
+
+function renderReviews() {
+  const list = document.getElementById("reviews-list");
+  const countEl = document.getElementById("reviews-count");
+  countEl.textContent = state.reviews.length;
+  countEl.className = state.reviews.length ? "badge badge-muted" : "badge badge-muted zero";
+  if (!state.reviews.length) {
+    list.innerHTML = '<span class="empty">No reviews yet. Click "+ Add PR" or add a tool with a code repo to auto-ingest your open PRs.</span>';
+    return;
+  }
+  list.innerHTML = state.reviews.map((r) => {
+    const annCount = (r.annotations || []).length;
+    const fileCount = (r.changed_files || []).length;
+    const tool = state.tools.find((t) => t.id === r.tool_id);
+    const dotColor = STATUS_DOT[r.status] || "var(--muted)";
+    const tags = [
+      r.authored_by_me ? '<span class="tag tag-mine">mine</span>' : '<span class="tag tag-other">theirs</span>',
+      r.draft ? '<span class="tag tag-draft">draft</span>' : "",
+    ].join("");
+    return `
+      <div class="review-card" onclick="openReviewPanel('${esc(r.id)}')">
+        <div class="review-card-hdr">
+          <span class="row-indicator" style="background:${dotColor}"></span>
+          <span class="review-card-title" title="${esc(r.title)}">${esc(r.title)}</span>
+          ${tags}
+          <div style="flex:1"></div>
+          <div class="row-actions" onclick="event.stopPropagation()">
+            <button class="btn-row" title="View PR" onclick="openReviewPanel('${esc(r.id)}')">&#128065;</button>
+            <button class="btn-row danger" title="Delete" onclick="deleteReview('${esc(r.id)}')">&#10005;</button>
+          </div>
+        </div>
+        <div class="review-card-meta">
+          <span style="font-family:monospace;color:var(--muted);font-size:10px">${esc(r.repo)} #${esc(String(r.pr_number))}</span>
+          ${tool ? `<span class="row-tool" style="font-size:10px">${esc(tool.name)}</span>` : ""}
+          <span style="color:var(--muted);font-size:10px">${fileCount} file${fileCount !== 1 ? "s" : ""}</span>
+          ${annCount ? `<span style="color:var(--orange);font-size:10px">${annCount} annotation${annCount !== 1 ? "s" : ""}</span>` : ""}
+        </div>
+      </div>`;
+  }).join("");
+}
+
+function openReviewPanel(id) {
+  const review = state.reviews.find((r) => r.id === id);
+  if (!review) return;
+  _activeReviewId = id;
+  _renderReviewPanel(review);
+  document.getElementById("review-panel").classList.remove("hidden");
+}
+
+function closeReviewPanel() {
+  _activeReviewId = null;
+  document.getElementById("review-panel").classList.add("hidden");
+}
+
+let _activeFileIdx = 0;
+
+function _renderReviewPanel(review) {
+  document.getElementById("review-panel-title").textContent = review.title;
+  document.getElementById("review-panel-meta").textContent = `${review.repo} #${review.pr_number}`;
+  document.getElementById("review-panel-status-dot").style.background = STATUS_DOT[review.status] || "var(--muted)";
+  document.getElementById("review-panel-gh-link").href = review.pr_url || "#";
+
+  const startBtn = document.getElementById("review-panel-start-btn");
+  const convertBtn = document.getElementById("review-panel-convert-btn");
+  convertBtn.classList.toggle("hidden", !review.authored_by_me || review.status === "pending");
+
+  const annCount = (review.annotations || []).length;
+  document.getElementById("review-panel-ann-count").textContent = annCount ? `${annCount} annotation${annCount !== 1 ? "s" : ""}` : "";
+
+  const files = review.changed_files || [];
+  const sidebar = document.getElementById("review-files-list");
+  sidebar.innerHTML = files.length
+    ? files.map((f, i) => `
+        <div class="review-file-item${i === _activeFileIdx ? " active" : ""}" onclick="_showFileDiff(${i})" title="${esc(f.filename)}">
+          <span class="review-file-status">${esc(f.status || "M").charAt(0).toUpperCase()}</span>
+          <span class="review-file-name">${esc(f.filename.split("/").pop())}</span>
+          <span class="review-file-path">${esc(f.filename)}</span>
+        </div>`).join("")
+    : '<span class="empty" style="padding:12px">No changed files.</span>';
+
+  if (files.length) _showFileDiff(_activeFileIdx, review);
+}
+
+function _showFileDiff(idx, reviewOverride) {
+  const review = reviewOverride || state.reviews.find((r) => r.id === _activeReviewId);
+  if (!review) return;
+  _activeFileIdx = idx;
+
+  // Update sidebar active state
+  document.querySelectorAll(".review-file-item").forEach((el, i) => {
+    el.classList.toggle("active", i === idx);
+  });
+
+  const files = review.changed_files || [];
+  const file = files[idx];
+  const diffArea = document.getElementById("review-diff-area");
+
+  if (!file || !file.patch) {
+    diffArea.innerHTML = '<span class="empty">No diff available for this file.</span>';
+    return;
+  }
+
+  // Build unified diff string
+  const diffStr = `diff --git a/${file.filename} b/${file.filename}\n--- a/${file.filename}\n+++ b/${file.filename}\n${file.patch}`;
+
+  let diffHtml;
+  if (typeof Diff2Html !== "undefined") {
+    diffHtml = Diff2Html.html(diffStr, { drawFileList: false, outputFormat: "line-by-line", matching: "lines" });
+  } else {
+    diffHtml = `<pre style="white-space:pre-wrap;font-size:11px;font-family:monospace">${esc(file.patch)}</pre>`;
+  }
+  diffArea.innerHTML = diffHtml;
+
+  // Inject annotation callouts and GH review comments after their line numbers
+  const fileAnnotations = (review.annotations || []).filter((a) => a.file_path === file.filename);
+  const fileGhComments = (review.gh_comments || []).filter((c) => c.path === file.filename);
+
+  if (fileAnnotations.length || fileGhComments.length) {
+    _injectDiffCallouts(diffArea, fileAnnotations, fileGhComments);
+  }
+}
+
+function _injectDiffCallouts(diffArea, annotations, ghComments) {
+  // diff2html marks line numbers with data attributes on <tr> elements
+  // We look for the right line cell and insert after the row
+  const rows = diffArea.querySelectorAll("tr");
+  const findRow = (lineno) => {
+    for (const row of rows) {
+      const cells = row.querySelectorAll("td");
+      for (const cell of cells) {
+        if (cell.dataset.lineNumber == lineno) return row;
+      }
+    }
+    return null;
+  };
+
+  const inserted = new Set();
+  const insertCallout = (lineno, html) => {
+    const row = findRow(lineno);
+    if (!row) return;
+    const key = lineno + "_" + html.substring(0, 20);
+    if (inserted.has(key)) return;
+    inserted.add(key);
+    const wrapper = document.createElement("tr");
+    wrapper.innerHTML = `<td colspan="4" style="padding:0">${html}</td>`;
+    row.after(wrapper);
+  };
+
+  annotations.forEach((a) => {
+    const sev = a.severity || "info";
+    const author = a.author === "agent" ? "&#129302; Agent" : "&#128100; User";
+    insertCallout(a.line, `<div class="annotation-block ${esc(sev)}"><span class="ann-author">${author}</span> <span class="ann-sev">${esc(sev)}</span><div class="ann-comment">${esc(a.comment)}</div></div>`);
+  });
+
+  ghComments.forEach((c) => {
+    const lineno = c.line || c.original_line;
+    if (!lineno) return;
+    insertCallout(lineno, `<div class="gh-comment-block"><span class="gh-comment-author">&#128279; ${esc(c.user?.login || "GitHub")}</span><div class="gh-comment-body">${esc(c.body)}</div></div>`);
+  });
+}
+
+async function syncReviews() {
+  const btn = document.getElementById("reviews-sync-btn");
+  btn.disabled = true;
+  btn.textContent = "Syncing...";
+  try {
+    await fetch("/reviews/sync", { method: "POST" });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "\u21bb Sync";
+  }
+}
+
+function openAddPrModal() {
+  document.getElementById("add-pr-url").value = "";
+  document.getElementById("add-pr-error").style.display = "none";
+  document.getElementById("add-pr-modal").classList.remove("hidden");
+  setTimeout(() => document.getElementById("add-pr-url").focus(), 50);
+}
+
+function closeAddPrModal() {
+  document.getElementById("add-pr-modal").classList.add("hidden");
+}
+
+async function submitAddPr() {
+  const url = document.getElementById("add-pr-url").value.trim();
+  const errEl = document.getElementById("add-pr-error");
+  const btn = document.getElementById("add-pr-submit");
+  errEl.style.display = "none";
+  if (!url) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pr_url: url }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      errEl.textContent = d.detail || "Failed to add PR.";
+      errEl.style.display = "block";
+      return;
+    }
+    const review = await r.json();
+    closeAddPrModal();
+    openReviewPanel(review.id);
+  } catch (err) {
+    errEl.textContent = String(err);
+    errEl.style.display = "block";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function deleteReview(id) {
+  if (!confirm("Remove this review?")) return;
+  await fetch(`/reviews/${id}`, { method: "DELETE" });
+}
+
+async function convertReviewToTask(id) {
+  const rid = id || _activeReviewId;
+  if (!rid) return;
+  const r = await fetch(`/reviews/${rid}/convert-to-task`, { method: "POST" });
+  if (!r.ok) { alert("Failed to convert review to task."); return; }
+  const task = await r.json();
+  closeReviewPanel();
+  switchTab("tasks");
+  showPrompt(task);
+}
+
+function showReviewPrompt() {
+  const review = state.reviews.find((r) => r.id === _activeReviewId);
+  if (!review) return;
+  const tool = state.tools.find((t) => t.id === review.tool_id);
+  const files = (review.changed_files || []).map((f) => `  - ${f.filename} (${f.status || "modified"}, +${f.additions || 0}/-${f.deletions || 0})`).join("\n") || "  (none)";
+  const annotations = (review.annotations || []).map((a) => `  [${a.severity}] ${a.file_path}:${a.line} - ${a.comment}`).join("\n") || "  (none so far)";
+
+  const prompt = `PR Review: ${review.title}
+
+Repo:        ${review.repo}
+PR:          ${review.pr_url}
+Branch:      ${review.head_branch} -> ${review.base_branch}
+Status:      ${review.status}
+${tool ? `Tool:        ${tool.name}` : ""}
+
+Changed files:
+${files}
+
+Existing annotations:
+${annotations}
+
+Instructions:
+- Use review_clone('${review.id}') to clone the repo and check out the head branch for local inspection.
+- Use review_get_files('${review.id}') to get the list of changed files with their patches.
+- Review each changed file carefully. For any issue found, call review_annotate('${review.id}', file_path, line_number, comment, severity) where severity is 'error', 'warning', or 'info'.
+- When you have reviewed all files, call review_complete('${review.id}', summary) with a brief summary of your findings.
+- Do NOT push any commits or create any GitHub comments. This is a local review only.
+- Focus on: correctness, security (OWASP Top 10), edge cases, test coverage gaps.`;
+
+  document.getElementById("prompt-text").textContent = prompt;
+  document.getElementById("prompt-modal").classList.remove("hidden");
 }
 
 connect();
