@@ -1228,7 +1228,7 @@ function renderReviews() {
   countEl.textContent = state.reviews.length;
   countEl.className = state.reviews.length ? "badge badge-muted" : "badge badge-muted zero";
   if (!state.reviews.length) {
-    list.innerHTML = '<span class="empty">No reviews yet. Click "+ Add PR" or add a tool with a code repo to auto-ingest your open PRs.</span>';
+    list.innerHTML = '<span class="empty">No reviews. Click "\u271a Add PR" or configure a tool with a code repo to auto-ingest your open PRs.</span>';
     return;
   }
   list.innerHTML = state.reviews.map((r) => {
@@ -1236,27 +1236,32 @@ function renderReviews() {
     const fileCount = (r.changed_files || []).length;
     const tool = state.tools.find((t) => t.id === r.tool_id);
     const dotColor = STATUS_DOT[r.status] || "var(--muted)";
+
     const tags = [
       r.authored_by_me ? '<span class="tag tag-mine">mine</span>' : '<span class="tag tag-other">theirs</span>',
       r.draft ? '<span class="tag tag-draft">draft</span>' : "",
-    ].join("");
+    ].filter(Boolean).join("");
+
+    // Sub-line: repo#num · tool · N files [· N annotations]
+    const subParts = [
+      `<span style="font-family:monospace">${esc(r.repo)} <span style="opacity:.6">#${r.pr_number}</span></span>`,
+      tool ? `<span>${esc(tool.name)}</span>` : null,
+      fileCount ? `<span>${fileCount} file${fileCount !== 1 ? "s" : ""}</span>` : null,
+      annCount ? `<span style="color:var(--orange)">${annCount} note${annCount !== 1 ? "s" : ""}</span>` : null,
+    ].filter(Boolean).join('<span class="sep">\xb7</span>');
+
     return `
       <div class="review-card" onclick="openReviewPanel('${esc(r.id)}')">
-        <div class="review-card-hdr">
-          <span class="row-indicator" style="background:${dotColor}"></span>
-          <span class="review-card-title" title="${esc(r.title)}">${esc(r.title)}</span>
-          ${tags}
-          <div style="flex:1"></div>
-          <div class="row-actions" onclick="event.stopPropagation()">
-            <button class="btn-row" title="View PR" onclick="openReviewPanel('${esc(r.id)}')">&#128065;</button>
-            <button class="btn-row danger" title="Delete" onclick="deleteReview('${esc(r.id)}')">&#10005;</button>
+        <span class="row-indicator" style="background:${dotColor}"></span>
+        <div class="review-card-body">
+          <div class="review-card-title-row">
+            <span class="review-card-title" title="${esc(r.title)}">${esc(r.title)}</span>
+            ${tags}
           </div>
+          <div class="review-card-sub">${subParts}</div>
         </div>
-        <div class="review-card-meta">
-          <span style="font-family:monospace;color:var(--muted);font-size:10px">${esc(r.repo)} #${esc(String(r.pr_number))}</span>
-          ${tool ? `<span class="row-tool" style="font-size:10px">${esc(tool.name)}</span>` : ""}
-          <span style="color:var(--muted);font-size:10px">${fileCount} file${fileCount !== 1 ? "s" : ""}</span>
-          ${annCount ? `<span style="color:var(--orange);font-size:10px">${annCount} annotation${annCount !== 1 ? "s" : ""}</span>` : ""}
+        <div class="review-card-actions" onclick="event.stopPropagation()">
+          <button class="btn-row danger" title="Remove" onclick="deleteReview('${esc(r.id)}')">&#10005;</button>
         </div>
       </div>`;
   }).join("");
@@ -1309,7 +1314,6 @@ function _showFileDiff(idx, reviewOverride) {
   if (!review) return;
   _activeFileIdx = idx;
 
-  // Update sidebar active state
   document.querySelectorAll(".review-file-item").forEach((el, i) => {
     el.classList.toggle("active", i === idx);
   });
@@ -1323,63 +1327,68 @@ function _showFileDiff(idx, reviewOverride) {
     return;
   }
 
-  // Build unified diff string
-  const diffStr = `diff --git a/${file.filename} b/${file.filename}\n--- a/${file.filename}\n+++ b/${file.filename}\n${file.patch}`;
-
-  let diffHtml;
-  if (typeof Diff2Html !== "undefined") {
-    diffHtml = Diff2Html.html(diffStr, { drawFileList: false, outputFormat: "line-by-line", matching: "lines" });
-  } else {
-    diffHtml = `<pre style="white-space:pre-wrap;font-size:11px;font-family:monospace">${esc(file.patch)}</pre>`;
-  }
-  diffArea.innerHTML = diffHtml;
-
-  // Inject annotation callouts and GH review comments after their line numbers
   const fileAnnotations = (review.annotations || []).filter((a) => a.file_path === file.filename);
-  const fileGhComments = (review.gh_comments || []).filter((c) => c.path === file.filename);
-
-  if (fileAnnotations.length || fileGhComments.length) {
-    _injectDiffCallouts(diffArea, fileAnnotations, fileGhComments);
-  }
+  const fileGhComments = (review.github_comments || []).filter((c) => c.path === file.filename);
+  diffArea.innerHTML = _renderPatch(file.patch, fileAnnotations, fileGhComments);
 }
 
-function _injectDiffCallouts(diffArea, annotations, ghComments) {
-  // diff2html marks line numbers with data attributes on <tr> elements
-  // We look for the right line cell and insert after the row
-  const rows = diffArea.querySelectorAll("tr");
-  const findRow = (lineno) => {
-    for (const row of rows) {
-      const cells = row.querySelectorAll("td");
-      for (const cell of cells) {
-        if (cell.dataset.lineNumber == lineno) return row;
-      }
+function _renderPatch(patch, annotations, ghComments) {
+  // Build newLine -> callout list map
+  const callouts = {};
+  (annotations || []).forEach((a) => {
+    (callouts[a.line] = callouts[a.line] || []).push({ type: "ann", data: a });
+  });
+  (ghComments || []).forEach((c) => {
+    const ln = c.line || c.original_line;
+    if (!ln) return;
+    (callouts[ln] = callouts[ln] || []).push({ type: "gh", data: c });
+  });
+
+  const rows = [];
+  let oldLine = 0, newLine = 0;
+
+  for (const raw of patch.split("\n")) {
+    if (!raw) continue;
+
+    if (raw.startsWith("@@")) {
+      const m = raw.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (m) { oldLine = parseInt(m[1]); newLine = parseInt(m[2]); }
+      rows.push(`<tr class="diff-hunk-hdr"><td colspan="3">${esc(raw)}</td></tr>`);
+      continue;
     }
-    return null;
-  };
 
-  const inserted = new Set();
-  const insertCallout = (lineno, html) => {
-    const row = findRow(lineno);
-    if (!row) return;
-    const key = lineno + "_" + html.substring(0, 20);
-    if (inserted.has(key)) return;
-    inserted.add(key);
-    const wrapper = document.createElement("tr");
-    wrapper.innerHTML = `<td colspan="4" style="padding:0">${html}</td>`;
-    row.after(wrapper);
-  };
+    const pfx = raw[0];
+    const content = raw.slice(1);
 
-  annotations.forEach((a) => {
+    if (pfx === "+") {
+      rows.push(`<tr class="diff-add"><td class="diff-ln"></td><td class="diff-ln">${newLine}</td><td class="diff-code"><span class="diff-pfx">+</span>${esc(content)}</td></tr>`);
+      (callouts[newLine] || []).forEach((c) => rows.push(_calloutRow(c)));
+      newLine++;
+    } else if (pfx === "-") {
+      rows.push(`<tr class="diff-del"><td class="diff-ln">${oldLine}</td><td class="diff-ln"></td><td class="diff-code"><span class="diff-pfx">-</span>${esc(content)}</td></tr>`);
+      oldLine++;
+    } else {
+      // context line (space or bare)
+      rows.push(`<tr class="diff-ctx"><td class="diff-ln">${oldLine}</td><td class="diff-ln">${newLine}</td><td class="diff-code"><span class="diff-pfx"> </span>${esc(content)}</td></tr>`);
+      (callouts[newLine] || []).forEach((c) => rows.push(_calloutRow(c)));
+      oldLine++;
+      newLine++;
+    }
+  }
+
+  return `<table class="diff-table"><tbody>${rows.join("")}</tbody></table>`;
+}
+
+function _calloutRow(c) {
+  if (c.type === "ann") {
+    const a = c.data;
     const sev = a.severity || "info";
-    const author = a.author === "agent" ? "&#129302; Agent" : "&#128100; User";
-    insertCallout(a.line, `<div class="annotation-block ${esc(sev)}"><span class="ann-author">${author}</span> <span class="ann-sev">${esc(sev)}</span><div class="ann-comment">${esc(a.comment)}</div></div>`);
-  });
-
-  ghComments.forEach((c) => {
-    const lineno = c.line || c.original_line;
-    if (!lineno) return;
-    insertCallout(lineno, `<div class="gh-comment-block"><span class="gh-comment-author">&#128279; ${esc(c.user?.login || "GitHub")}</span><div class="gh-comment-body">${esc(c.body)}</div></div>`);
-  });
+    const who = a.author === "agent" ? "&#129302; Agent" : "&#128100; User";
+    return `<tr class="diff-callout"><td colspan="3"><div class="annotation-block ${esc(sev)}"><span class="ann-meta">${who} &middot; ${esc(sev)}</span><div class="ann-body">${esc(a.comment)}</div></div></td></tr>`;
+  }
+  const d = c.data;
+  const who = d.user || "GitHub";
+  return `<tr class="diff-callout"><td colspan="3"><div class="gh-comment-block"><span class="ann-meta">&#128279; ${esc(who)}</span><div class="ann-body">${esc(d.body || "")}</div></div></td></tr>`;
 }
 
 async function syncReviews() {
