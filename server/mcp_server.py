@@ -440,16 +440,25 @@ def review_clone(review_id: str) -> str:
     except Exception as e:
         return f"ERROR: could not fetch review: {e}"
 
-    url = f"https://github.com/{review['repo']}.git"
+    repo_slug = review["repo"]  # owner/name
+    github_host = os.getenv("GITHUB_HOST", "github.com")
+    token = os.getenv("GITHUB_TOKEN", "")
+    if token:
+        url = f"https://x-access-token:{token}@{github_host}/{repo_slug}.git"
+    else:
+        url = f"https://{github_host}/{repo_slug}.git"
     head_branch = review.get("head_branch", "")
     if not head_branch:
         return "ERROR: review has no head_branch"
 
-    dest = WORKSPACE_ROOT / review_id / "code"
+    # reviews/ prefix keeps review workspaces completely separate from task workspaces
+    dest = WORKSPACE_ROOT / "reviews" / review_id / "code"
     dest.mkdir(parents=True, exist_ok=True)
 
     if (dest / ".git").exists():
         log("already cloned, fetching latest")
+        if token:
+            _git(["remote", "set-url", "origin", url], str(dest))
         _git(["fetch", "--prune", "origin"], str(dest), timeout=60)
     else:
         log(f"cloning {url}")
@@ -458,14 +467,21 @@ def review_clone(review_id: str) -> str:
             return f"ERROR: clone failed: {err}"
 
     log(f"checking out {head_branch}")
-    rc, out, _ = _git(["ls-remote", "--heads", "origin", head_branch], str(dest))
-    if rc == 0 and head_branch in out:
-        _, _, err = _git(["checkout", "--track", f"origin/{head_branch}"], str(dest))
-        _, _, _ = _git(["pull", "--ff-only", "origin", head_branch], str(dest))
+    # Check if branch exists locally already (re-clone case)
+    _, local_out, _ = _git(["branch", "--list", head_branch], str(dest))
+    if local_out.strip():
+        _git(["checkout", head_branch], str(dest))
+        _git(["pull", "--ff-only", "origin", head_branch], str(dest))
     else:
-        code, _, err = _git(["checkout", head_branch], str(dest))
-        if code != 0:
-            return f"ERROR: could not checkout {head_branch}: {err}"
+        rc, remote_out, _ = _git(["ls-remote", "--heads", "origin", head_branch], str(dest))
+        if rc == 0 and head_branch in remote_out:
+            code, _, err = _git(["checkout", "--track", f"origin/{head_branch}"], str(dest))
+            if code != 0:
+                return f"ERROR: could not checkout {head_branch}: {err}"
+        else:
+            code, _, err = _git(["checkout", head_branch], str(dest))
+            if code != 0:
+                return f"ERROR: could not checkout {head_branch}: {err}"
 
     workspace_path = str(dest)
     try:
