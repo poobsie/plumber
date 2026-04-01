@@ -1271,6 +1271,7 @@ function openReviewPanel(id) {
   const review = state.reviews.find((r) => r.id === id);
   if (!review) return;
   _activeReviewId = id;
+  _activeReviewItem = null; // reset so first item is chosen
   _renderReviewPanel(review);
   document.getElementById("review-panel").classList.remove("hidden");
 }
@@ -1280,7 +1281,7 @@ function closeReviewPanel() {
   document.getElementById("review-panel").classList.add("hidden");
 }
 
-let _activeFileIdx = 0;
+let _activeReviewItem = null; // "description" | "conversation" | file-index (number)
 
 function _renderReviewPanel(review) {
   document.getElementById("review-panel-title").textContent = review.title;
@@ -1288,45 +1289,116 @@ function _renderReviewPanel(review) {
   document.getElementById("review-panel-status-dot").style.background = STATUS_DOT[review.status] || "var(--muted)";
   document.getElementById("review-panel-gh-link").href = review.pr_url || "#";
 
-  const startBtn = document.getElementById("review-panel-start-btn");
   const convertBtn = document.getElementById("review-panel-convert-btn");
   convertBtn.classList.toggle("hidden", !review.authored_by_me || review.status === "pending");
 
   const annCount = (review.annotations || []).length;
-  document.getElementById("review-panel-ann-count").textContent = annCount ? `${annCount} annotation${annCount !== 1 ? "s" : ""}` : "";
+  document.getElementById("review-panel-ann-count").textContent = annCount ? `${annCount} note${annCount !== 1 ? "s" : ""}` : "";
 
   const files = review.changed_files || [];
-  const sidebar = document.getElementById("review-files-list");
-  sidebar.innerHTML = files.length
-    ? files.map((f, i) => `
-        <div class="review-file-item${i === _activeFileIdx ? " active" : ""}" onclick="_showFileDiff(${i})" title="${esc(f.filename)}">
-          <span class="review-file-status">${esc(f.status || "M").charAt(0).toUpperCase()}</span>
-          <span class="review-file-name">${esc(f.filename.split("/").pop())}</span>
-          <span class="review-file-path">${esc(f.filename)}</span>
-        </div>`).join("")
-    : '<span class="empty" style="padding:12px">No changed files.</span>';
+  const hasDesc = !!(review.pr_body && review.pr_body.trim());
+  const ghReviews = (review.github_reviews || []).filter((rv) => rv.body && rv.body.trim());
+  const ghComments = (review.github_comments || []);
+  const hasConv = ghReviews.length > 0 || ghComments.length > 0;
 
-  if (files.length) _showFileDiff(_activeFileIdx, review);
+  // Build ordered sidebar items
+  const items = [];
+  if (hasDesc) items.push({ key: "description", label: "Description", icon: "≡" });
+  if (hasConv) {
+    const convCount = ghReviews.length + ghComments.length;
+    items.push({ key: "conversation", label: `Conversation (${convCount})`, icon: "❶".replace("❶", String(convCount)) });
+  }
+  files.forEach((f, i) => items.push({ key: i, file: f }));
+
+  // Default selection: keep current if still valid, else first item
+  const validKeys = items.map((it) => it.key);
+  if (!validKeys.includes(_activeReviewItem)) {
+    _activeReviewItem = items[0]?.key ?? 0;
+  }
+
+  const sidebar = document.getElementById("review-files-list");
+  sidebar.innerHTML = items.map((it) => {
+    const active = it.key === _activeReviewItem;
+    if (it.key === "description" || it.key === "conversation") {
+      return `<div class="review-file-item${active ? " active" : ""}" data-ikey="${esc(String(it.key))}" onclick="_showItem('${it.key}')">
+        <span class="review-file-status" style="font-style:normal">${it.key === "description" ? "&#9776;" : "&#128172;"}</span>
+        <span class="review-file-name" style="font-family:inherit;font-size:11px">${esc(it.label)}</span>
+      </div>`;
+    }
+    const f = it.file;
+    const sc = (f.status || "M").charAt(0).toUpperCase();
+    const scColor = { A: "var(--green)", D: "var(--red)", R: "var(--purple)" }[sc] || "var(--orange)";
+    return `<div class="review-file-item${active ? " active" : ""}" data-ikey="${it.key}" onclick="_showItem(${it.key})" title="${esc(f.filename)}">
+      <span class="review-file-status" style="color:${scColor}">${sc}</span>
+      <span class="review-file-name">${esc(f.filename)}</span>
+    </div>`;
+  }).join("") || '<span class="empty" style="padding:12px">No files.</span>';
+
+  _showItem(_activeReviewItem, review);
 }
 
-function _showFileDiff(idx, reviewOverride) {
+function _showItem(key, reviewOverride) {
   const review = reviewOverride || state.reviews.find((r) => r.id === _activeReviewId);
   if (!review) return;
-  _activeFileIdx = idx;
+  _activeReviewItem = key;
 
-  document.querySelectorAll(".review-file-item").forEach((el, i) => {
-    el.classList.toggle("active", i === idx);
+  document.querySelectorAll(".review-file-item").forEach((el) => {
+    el.classList.toggle("active", el.dataset.ikey === String(key));
   });
 
-  const files = review.changed_files || [];
-  const file = files[idx];
   const diffArea = document.getElementById("review-diff-area");
 
+  if (key === "description") {
+    const body = review.pr_body || "";
+    const rendered = typeof marked !== "undefined" ? marked.parse(body) : `<pre>${esc(body)}</pre>`;
+    diffArea.innerHTML = `<div class="pr-prose">${rendered}</div>`;
+    return;
+  }
+
+  if (key === "conversation") {
+    const ghReviews = (review.github_reviews || []).filter((rv) => rv.body && rv.body.trim());
+    const ghComments = (review.github_comments || []);
+    if (!ghReviews.length && !ghComments.length) {
+      diffArea.innerHTML = '<span class="empty">No conversation yet.</span>';
+      return;
+    }
+    const stateLabel = { APPROVED: "Approved", CHANGES_REQUESTED: "Changes requested", COMMENTED: "Commented", DISMISSED: "Dismissed" };
+    const stateColor = { APPROVED: "var(--green)", CHANGES_REQUESTED: "var(--red)", COMMENTED: "var(--muted)", DISMISSED: "var(--muted)" };
+    let html = '<div class="pr-prose">';
+    ghReviews.forEach((rv) => {
+      const label = stateLabel[rv.state] || rv.state;
+      const color = stateColor[rv.state] || "var(--muted)";
+      const rendered = typeof marked !== "undefined" ? marked.parse(rv.body) : `<pre>${esc(rv.body)}</pre>`;
+      html += `<div class="conv-block">
+        <div class="conv-hdr"><strong>${esc(rv.user)}</strong><span class="conv-state" style="color:${color}">${esc(label)}</span></div>
+        <div class="conv-body">${rendered}</div>
+      </div>`;
+    });
+    // Inline comments grouped by file
+    if (ghComments.length) {
+      const byFile = {};
+      ghComments.forEach((c) => { (byFile[c.path] = byFile[c.path] || []).push(c); });
+      Object.entries(byFile).forEach(([path, cs]) => {
+        html += `<div class="conv-block">`;
+        html += `<div class="conv-hdr" style="font-family:monospace;font-size:11px">${esc(path)}</div>`;
+        cs.forEach((c) => {
+          html += `<div class="conv-inline"><span class="conv-inline-who">${esc(c.user)}</span>${c.line ? `<span class="conv-inline-line">line ${c.line}</span>` : ""}<div class="conv-inline-body">${esc(c.body)}</div></div>`;
+        });
+        html += `</div>`;
+      });
+    }
+    html += "</div>";
+    diffArea.innerHTML = html;
+    return;
+  }
+
+  // File diff
+  const files = review.changed_files || [];
+  const file = files[key];
   if (!file || !file.patch) {
     diffArea.innerHTML = '<span class="empty">No diff available for this file.</span>';
     return;
   }
-
   const fileAnnotations = (review.annotations || []).filter((a) => a.file_path === file.filename);
   const fileGhComments = (review.github_comments || []).filter((c) => c.path === file.filename);
   diffArea.innerHTML = _renderPatch(file.patch, fileAnnotations, fileGhComments);
@@ -1467,14 +1539,27 @@ function showReviewPrompt() {
   const files = (review.changed_files || []).map((f) => `  - ${f.filename} (${f.status || "modified"}, +${f.additions || 0}/-${f.deletions || 0})`).join("\n") || "  (none)";
   const annotations = (review.annotations || []).map((a) => `  [${a.severity}] ${a.file_path}:${a.line} - ${a.comment}`).join("\n") || "  (none so far)";
 
+  const descSection = (review.pr_body && review.pr_body.trim())
+    ? `\nDescription:\n${review.pr_body.trim().split("\n").map((l) => `  ${l}`).join("\n")}\n`
+    : "";
+
+  const ghReviews = (review.github_reviews || []).filter((rv) => rv.body && rv.body.trim());
+  const ghInline = (review.github_comments || []);
+  let convSection = "";
+  if (ghReviews.length || ghInline.length) {
+    const stateLabel = { APPROVED: "Approved", CHANGES_REQUESTED: "Changes requested", COMMENTED: "Commented", DISMISSED: "Dismissed" };
+    const lines = ghReviews.map((rv) => `  ${rv.user} [${stateLabel[rv.state] || rv.state}]: ${rv.body.trim()}`);
+    ghInline.forEach((c) => lines.push(`  ${c.user} on ${c.path}${c.line ? `:${c.line}` : ""}: ${c.body.trim()}`));
+    convSection = `\nConversation:\n${lines.join("\n")}\n`;
+  }
+
   const prompt = `PR Review: ${review.title}
 
 Repo:        ${review.repo}
 PR:          ${review.pr_url}
 Branch:      ${review.head_branch} -> ${review.base_branch}
-Status:      ${review.status}
-${tool ? `Tool:        ${tool.name}` : ""}
-
+Status:      ${review.status}${tool ? `\nTool:        ${tool.name}` : ""}
+${descSection}${convSection}
 Changed files:
 ${files}
 
@@ -1485,6 +1570,7 @@ Instructions:
 - Use review_clone('${review.id}') to clone the repo and check out the head branch for local inspection.
 - Use review_get_files('${review.id}') to get the list of changed files with their patches.
 - Review each changed file carefully. For any issue found, call review_annotate('${review.id}', file_path, line_number, comment, severity) where severity is 'error', 'warning', or 'info'.
+- Pay attention to the description and any existing conversation above - use them as context.
 - When you have reviewed all files, call review_complete('${review.id}', summary) with a brief summary of your findings.
 - Do NOT push any commits or create any GitHub comments. This is a local review only.
 - Focus on: correctness, security (OWASP Top 10), edge cases, test coverage gaps.`;

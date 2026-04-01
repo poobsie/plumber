@@ -425,10 +425,6 @@ def open_pr(task_id: str, repo: str, base: str, head: str, title: str, body: str
         return f"ERROR: {e}"
 
 
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
-
-
 # ── Review tools ──────────────────────────────────────────────────────────────
 
 @mcp.tool()

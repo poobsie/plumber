@@ -511,6 +511,26 @@
     }
     .gh-comment-block .ann-meta { font-size: 10px; color: var(--purple); opacity: 0.85; margin-bottom: 2px; }
     .gh-comment-block .ann-body { color: var(--text); }
+    /* prose / conversation views */
+    .pr-prose { padding: 20px 24px; max-width: 780px; font-size: 13px; line-height: 1.7; color: var(--text); }
+    .pr-prose h1,.pr-prose h2,.pr-prose h3 { color: var(--text); margin: 1.2em 0 0.4em; font-size: 14px; }
+    .pr-prose h1 { font-size: 16px; } .pr-prose h2 { font-size: 15px; }
+    .pr-prose p { margin: 0.5em 0; }
+    .pr-prose ul,.pr-prose ol { padding-left: 1.5em; margin: 0.5em 0; }
+    .pr-prose code { font-family: monospace; font-size: 11px; background: rgba(255,255,255,.07); padding: 1px 5px; border-radius: 3px; }
+    .pr-prose pre { background: rgba(0,0,0,.3); border: 1px solid var(--border); border-radius: 4px; padding: 10px 14px; overflow-x: auto; }
+    .pr-prose pre code { background: none; padding: 0; }
+    .pr-prose blockquote { border-left: 3px solid var(--border); margin: 0; padding: 4px 12px; color: var(--muted); }
+    .pr-prose a { color: var(--blue); }
+    .pr-prose hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+    .conv-block { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+    .conv-hdr { display: flex; align-items: center; gap: 10px; padding: 7px 14px; background: rgba(255,255,255,.03); border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; }
+    .conv-state { font-size: 11px; font-weight: 400; margin-left: 4px; }
+    .conv-body { padding: 10px 14px; }
+    .conv-inline { border-top: 1px solid var(--border); padding: 7px 14px; font-size: 12px; }
+    .conv-inline-who { font-weight: 600; margin-right: 6px; }
+    .conv-inline-line { font-family: monospace; font-size: 10px; color: var(--muted); margin-right: 6px; }
+    .conv-inline-body { margin-top: 4px; color: var(--text); white-space: pre-wrap; }
     /* diff table */
     .diff-table { width: 100%; border-collapse: collapse; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.5; }
     .diff-ln { color: var(--muted); text-align: right; padding: 0 8px; width: 36px; min-width: 36px; user-select: none; background: rgba(0,0,0,.25); border-right: 1px solid var(--border); white-space: nowrap; vertical-align: top; }
