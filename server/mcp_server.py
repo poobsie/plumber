@@ -442,11 +442,7 @@ def review_clone(review_id: str) -> str:
 
     repo_slug = review["repo"]  # owner/name
     github_host = os.getenv("GITHUB_HOST", "github.com")
-    token = os.getenv("GITHUB_TOKEN", "")
-    if token:
-        url = f"https://x-access-token:{token}@{github_host}/{repo_slug}.git"
-    else:
-        url = f"https://{github_host}/{repo_slug}.git"
+    url = f"https://{github_host}/{repo_slug}.git"
     head_branch = review.get("head_branch", "")
     if not head_branch:
         return "ERROR: review has no head_branch"
@@ -457,8 +453,6 @@ def review_clone(review_id: str) -> str:
 
     if (dest / ".git").exists():
         log("already cloned, fetching latest")
-        if token:
-            _git(["remote", "set-url", "origin", url], str(dest))
         _git(["fetch", "--prune", "origin"], str(dest), timeout=60)
     else:
         log(f"cloning {url}")
